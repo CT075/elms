@@ -57,10 +57,45 @@ trait PrimitiveOps extends Base {
   extension [A, B](f: Rep[A => B])
     def apply(arg: Rep[A]): Rep[B] = unsafeReflect(App, f, arg)
 
-  extension [A1, A2, B](f: Rep[(A1, A2) => B])
-    def apply(a1: Rep[A1], a2: Rep[A2]): Rep[B] = unsafeReflect(App, f, a1, a2)
+  // !!! This *almost* works. While we can generalize over function arities
+  // properly, Scala's inference search can't quite actually get the right types
+  // for `call` without help (see also `typechecking` in tests).
 
-  extension [A1, A2, A3, B](f: Rep[(A1, A2, A3) => B])
-    def apply(a1: Rep[A1], a2: Rep[A2], a3: Rep[A3]): Rep[B] =
-      unsafeReflect(App, f, a1, a2, a3)
+  // The below is Some Magic that is intended to allow lifted functions of type
+  // `Rep[(A, B) => C]` (for all tuple types) to be called with no special
+  // syntax.
+
+  // The trait `UnwrapTupleReps` defines a function `unwrapAll` that turns a
+  // tuple of type `(Rep[A], Rep[B])` (etc) into a `List[Exp]`.
+  trait UnwrapTupleReps[Args <: Tuple] {
+    def unwrapAll(args: Tuple.Map[Args, Rep]): List[Exp]
+  }
+
+  // Next, we define the type-level recursive function over tuple types. An
+  // empty tuple produces an empty list...
+  given UnwrapTupleReps[EmptyTuple] with
+    def unwrapAll(args: EmptyTuple): List[Exp] = Nil
+
+  // And the tuple `Rep[H] *: rest` unwraps the head, then recursively unwraps
+  // the tail.
+  given [H, T <: Tuple](using tailUnwrapper: UnwrapTupleReps[T]): UnwrapTupleReps[
+    H *: T
+  ] with
+    def unwrapAll(args: Rep[H] *: Tuple.Map[T, Rep]): List[Exp] =
+      unsafeUnwrap(args.head) :: tailUnwrapper.unwrapAll(args.tail)
+
+  def call[F, Args <: Tuple, B](f: Rep[F], args: Tuple.Map[Args, Rep])(using
+      TupledFunction[F, Args => B],
+      UnwrapTupleReps[Args]
+  ): Rep[B] = unsafeWrap(
+    unsafeRegister(
+      App,
+      (unsafeUnwrap(f) :: summon[UnwrapTupleReps[Args]].unwrapAll(args))*
+    )
+  )
+
+  extension [F, Args <: Tuple, B](using
+      TupledFunction[F, Args => B],
+      UnwrapTupleReps[Args]
+  )(f: Rep[F]) def apply(args: Tuple.Map[Args, Rep]): Rep[B] = call(f, args)
 }

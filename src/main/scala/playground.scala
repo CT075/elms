@@ -11,11 +11,10 @@ trait Dsl extends DslOps {
 
   def foo(f: Rep[Int => Int]) = f(1)
 
-  /*
+  // See PrimitiveOps.scala.
   def bar(f: Rep[(Int, String) => Int]) =
     //f((unit(1), unit("")))
     call[(Int, String) => Int, (Int, String), Int](f, (unit(1), unit("")))
-    */
 }
 
 object Playground extends SnippetDriver[Int, Int] with Dsl {
