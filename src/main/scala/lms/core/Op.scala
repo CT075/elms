@@ -2,10 +2,10 @@
 
 package lms.core
 
-enum Op derives CanEqual {
+enum Op(effectful: Boolean = true) derives CanEqual {
   case Const[T](val v: T)
 
-  case App
+  case App extends Op(effectful = true)
 
   case Plus
   case Minus
@@ -21,15 +21,15 @@ enum Op derives CanEqual {
   case Or
 
   case Range
-  case RangeForEach
+  case RangeForEach extends Op(effectful = true)
   case RangeStart
   case RangeEnd
 
   case IfThenElse
   case While
 
-  case ArrayNew(typ: Type)
-  case ArrayGet
-  case ArraySet
+  case ArrayNew(typ: Type) extends Op(effectful = true)
+  case ArrayGet extends Op(effectful = true)
+  case ArraySet extends Op(effectful = true)
   case ArrayLength
 }
