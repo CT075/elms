@@ -2,7 +2,6 @@ package lms.core
 
 import annotation.implicitNotFound
 
-import lms.runtime.Log
 import lms.core.Op._
 
 trait IntegerOps extends Base {
