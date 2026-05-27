@@ -6,6 +6,7 @@ trait Type derives CanEqual
 
 case class ARRAY(inner: Type) extends Type
 case class ARROW(args: Type, out: Type) extends Type
+case object RANGE extends Type
 
 sealed trait Primitive[A] extends Type {
   def is[B](other: Primitive[B]): Option[A =:= B]
@@ -57,8 +58,14 @@ given primBool: Primitive[Boolean] = BOOL
 given primChar: Primitive[Char] = CHAR
 given primString: Primitive[String] = STRING
 
+given typRange: Typable[Range] with
+  val identity = RANGE
+
 given typPrim[A](using prim: Primitive[A]): Typable[A] with
   val identity = prim
+
+given typArrow[A, B](using typA: Typable[A], typB: Typable[B]): Typable[A => B] with
+  val identity = ARROW(typA.identity, typB.identity)
 
 given typArray[A](using inner: Typable[A]): Typable[Array[A]] with
   val identity = ARRAY(inner.identity)

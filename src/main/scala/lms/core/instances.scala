@@ -11,6 +11,7 @@ object instances {
   given Primitive[String] = primString
   given [A: Primitive]: Typable[A] = typPrim
   given [A: Typable]: Typable[Array[A]] = typArray
+  given [A: Typable, B: Typable]: Typable[A => B] = typArrow
 
   given [A: Primitive]: AsStaticData[A] = staticPrim
   given [A](using AsStaticData[A], Typable[A]): AsStaticData[Array[A]] = staticArray
