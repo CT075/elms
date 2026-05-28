@@ -1,5 +1,8 @@
 package elms.core
 
+import scala.deriving.Mirror
+import scala.compiletime.{constValue, error}
+
 import elms.runtime.Log
 
 // These are low-level operations that simply reflect the operation into the
@@ -7,22 +10,31 @@ import elms.runtime.Log
 // with `asInstanceOf`.
 
 trait StructOps extends Base {
-  def checkField[T](field: String)(using manifest: StructManifest[T]): Unit =
-    if !manifest.contains(field) then {
-      Log.warning(s"Manifest for type ${manifest.name} does not contain field $field")
-    }
+  transparent inline def structGet[S, Name <: String & Singleton](
+      receiver: Rep[S]
+  )(using
+      manifest: StructManifest[S],
+      m: Mirror.ProductOf[S]
+  ): Rep[Field[Name, m.MirroredElemLabels, m.MirroredElemTypes]] =
+    inline if containsLabel[Name, m.MirroredElemLabels] then
+      unsafeReflect(Op.StructGet(manifest, constValue[Name]), receiver)
+    else error(s"${manifest.name} has no field ${constValue[Name]}")
 
-  def structGet[T: StructManifest](receiver: Rep[T], field: String): Rep[Any] = {
-    checkField[T](field)
-    unsafeReflect(Op.StructGet(summon[StructManifest[T]].repr, field), receiver)
-  }
+  transparent inline def structSet[S, Name <: String & Singleton](using
+      manifest: StructManifest[S],
+      m: Mirror.ProductOf[S]
+  )(receiver: Rep[S], v: Rep[Field[Name, m.MirroredElemLabels, m.MirroredElemTypes]]) =
+    inline if containsLabel[Name, m.MirroredElemLabels] then
+      unsafeReflect(Op.StructSet(constValue[Name]), receiver, v)
+    else error(s"${manifest.name} has no field ${constValue[Name]}")
 
-  def structSet[T: StructManifest](receiver: Rep[T], field: String, v: Rep[Any]): Rep[Unit] = {
-    checkField[T](field)
-    unsafeReflect(Op.StructSet(field), receiver, v)
-  }
-
-  extension [T: StructManifest](t: Rep[T])
-    def get(field: String): Rep[Any] = structGet(t, field)
-    def set(field: String, v: Rep[Any]): Rep[Unit] = structSet(t, field, v)
+  extension [S: StructManifest](t: Rep[S])
+    inline def get[Name <: String & Singleton](using
+        m: Mirror.ProductOf[S]
+    ): Rep[Field[Name, m.MirroredElemLabels, m.MirroredElemTypes]] =
+      structGet[S, Name](t)
+    inline def set[Name <: String & Singleton](using
+        m: Mirror.ProductOf[S]
+    )(v: Rep[Field[Name, m.MirroredElemLabels, m.MirroredElemTypes]]) =
+      structSet[S, Name](t, v)
 }

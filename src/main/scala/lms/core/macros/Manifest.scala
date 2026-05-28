@@ -1,6 +1,6 @@
 package elms.core.macros
 
-import elms.core.{Type, Typable, StructManifest, StructRepr}
+import elms.core.{Type, Typable, StructManifest}
 
 import scala.quoted.{Expr, Quotes, Type as QType}
 
@@ -45,10 +45,8 @@ private[core] object Manifest {
 
     '{
       new StructManifest[A] {
-        val repr: StructRepr = new StructRepr {
-          override val name: String = ${ Expr(clsName) }
-          override val members: Map[String, Type] = ($membersE).toMap
-        }
+        override val name: String = ${ Expr(clsName) }
+        override val members: Map[String, Type] = ($membersE).toMap
       }
     }
   }

@@ -1,32 +1,34 @@
 package elms.core
 
 import scala.deriving.Mirror
+import scala.compiletime.{erasedValue, constValue, summonInline, error}
 
 import elms.core.macros.Manifest
 
-case class STRUCT(repr: StructRepr) extends Type
+type Field[
+  Name <: String,
+  Labels <: Tuple,
+  Elems <: Tuple
+] <: Any = (Labels, Elems) match
+  case (Name *: labelsTail, elem *: elemsTail) => elem
+  case (label *: labelsTail, elem *: elemsTail) =>
+    Field[Name, labelsTail, elemsTail]
 
-trait StructRepr {
-  def name: String
-  def members: Map[String, Type]
+inline def containsLabel[Name <: String, Labels <: Tuple]: Boolean =
+  inline erasedValue[Labels] match
+    case _: EmptyTuple => false
+    case _: (Name *: tail) => true
+    case _: (head *: tail) => containsLabel[Name, tail]
 
-  def get(name: String): Option[Type] = members.get(name)
-}
+case class FieldWitness[A](typ: Typable[A])
 
-trait StructManifest[A] {
-  val repr: StructRepr
-
-  def name: String = repr.name
-  def members: Map[String, Type] = repr.members
-
-  def getField(name: String): Option[Type] = repr.get(name)
-  def contains(name: String): Boolean = getField(name).isDefined
+trait StructManifest[S] {
+  val name: String
+  val fields: Map[String, Type]
 }
 
 object StructManifest {
-  inline def derived[A](using Mirror.ProductOf[A]): StructManifest[A] =
-    ${ Manifest.derivedImpl[A] }
+  @annotation.nowarn("msg=New anonymous class definition will be duplicated")
+  inline given derived[S](using Mirror.ProductOf[S]): StructManifest[S] =
+    ${ Manifest.derivedImpl[S] }
 }
-
-given typStruct[A](using manifest: StructManifest[A]): Typable[A] with
-  val identity: Type = STRUCT(manifest.repr)
