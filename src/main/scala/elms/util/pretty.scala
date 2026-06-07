@@ -1,4 +1,4 @@
-package lms.util.pretty
+package elms.util.pretty
 
 // Wadler/Leijen-style pretty-printing.
 

@@ -216,9 +216,6 @@ object View {
     def into: Term = E(Op.StructSet(field), Seq(t, v))
   }
 
-  private def packConst[A](c: Op.Const[A])(using aprim: Primitive[A]): View =
-    Const(c.v)(using aprim)
-
   def mkConst[T: Primitive](x: T): Term = Const(x).into
 
   def view(t: Term): Option[View] = t match {
@@ -237,7 +234,7 @@ object View {
 
     case E(c @ Op.Const(_), s) => {
       if s.nonEmpty then warnTooMany("`Const`")
-      Some(packConst(c)(using c.prim))
+      Some(Const(c.v)(using c.prim))
     }
 
     case E(Op.Custom(name, ty), args) => Some(Custom(name, ty, args))
