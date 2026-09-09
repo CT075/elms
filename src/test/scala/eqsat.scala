@@ -155,6 +155,44 @@ class EqsatSuite extends AnyFunSuite {
     assert(extracted(g, term) == E(Plus, Seq(v("x"), E(Const(2), Seq()))))
   }
 
+  test("bitwise identities collapse") {
+    val g = new EGraph(Rules.default)
+    val x = g.addNamedVar("x")
+    val allOnes = g.addNode(Const(-1), Seq())
+
+    val self = g.addNode(BitAnd, Seq(x, x))
+    val saturated = g.addNode(BitOr, Seq(x, allOnes))
+    val complement = g.addNode(BitXor, Seq(x, allOnes))
+    val twice = g.addNode(BitNot, Seq(g.addNode(BitNot, Seq(x))))
+
+    g.saturate()
+    assert(extracted(g, self) == v("x"))
+    assert(extracted(g, saturated) == E(Const(-1), Seq()))
+    assert(extracted(g, complement) == E(BitNot, Seq(v("x"))))
+    assert(extracted(g, twice) == v("x"))
+  }
+
+  test("bitwise constants fold") {
+    val g = new EGraph()
+    val mask = g
+      .addNode(BitOr, Seq(g.addNode(Const(0xf0), Seq()), g.addNode(Const(0x0f), Seq())))
+    val shifted = g.addNode(Shl, Seq(mask, g.addNode(Const(4), Seq())))
+
+    g.saturate()
+    assert(extracted(g, shifted) == E(Const(0xff0), Seq()))
+  }
+
+  // Scala masks a shift count to five bits and C leaves it undefined past the
+  // width, so `ConstantAnalysis` declines the fold rather than pick a side.
+  test("an out-of-range shift count does not fold") {
+    val g = new EGraph(Rules.default)
+    val term = g
+      .addNode(Shl, Seq(g.addNode(Const(1), Seq()), g.addNode(Const(32), Seq())))
+
+    g.saturate()
+    assert(extracted(g, term) == E(Shl, Seq(E(Const(1), Seq()), E(Const(32), Seq()))))
+  }
+
   test("saturation reaches a fixpoint under rules that could loop") {
     val g = new EGraph(Ruleset(Seq(addcomm, addassoc)))
     val x = g.addNamedVar("x")

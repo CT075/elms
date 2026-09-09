@@ -125,6 +125,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
     case View.Negate(_)                                        => Some(INT)
     case View.Plus(_, _) | View.Times(_, _) | View.Minus(_, _) => Some(INT)
+    case View.BitAnd(_, _) | View.BitOr(_, _) | View.BitXor(_, _) | View.BitNot(_) |
+        View.Shl(_, _) | View.Shr(_, _) | View.UShr(_, _) => Some(INT)
     case View.Equals(_, _) | View.Lt(_, _) | View.Gt(_, _) | View.Le(_, _) | View
           .Ge(_, _) | View.And(_, _) | View.Or(_, _) | View.Not(_) => Some(BOOL)
     case View.Range(_, _)                      => None
@@ -262,6 +264,29 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case View.Not(t)       => {
         out.emit("!")
         out.emitMaybeParenthesizedExpr(env)(t)
+      }
+
+      case View.BitAnd(x, y) => out.emitBinop(env)("&", x, y)
+      case View.BitOr(x, y)  => out.emitBinop(env)("|", x, y)
+      case View.BitXor(x, y) => out.emitBinop(env)("^", x, y)
+      case View.Shl(x, y)    => out.emitBinop(env)("<<", x, y)
+      case View.Shr(x, y)    => out.emitBinop(env)(">>", x, y)
+      case View.BitNot(t)    => {
+        out.emit("~")
+        out.emitMaybeParenthesizedExpr(env)(t)
+      }
+
+      // `>>` on a signed `int` is arithmetic, so the zero-fill has to happen in
+      // `unsigned int` and come back. The outer cast is what keeps the result
+      // typed `int` for `inferType`; it is implementation-defined for shifts
+      // that land above `INT_MAX`, which is as close as C gets to Scala's
+      // wrapping `>>>`.
+      case View.UShr(x, y) => {
+        out.emit("(int)((unsigned int)")
+        out.emitMaybeParenthesizedExpr(env)(x)
+        out.emit(" >> ")
+        out.emitMaybeParenthesizedExpr(env)(y)
+        out.emit(")")
       }
 
       case View.IfThenElse(guard, tthen, telse) => {

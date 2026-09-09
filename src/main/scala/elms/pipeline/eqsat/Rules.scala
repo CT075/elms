@@ -10,14 +10,15 @@ import Pattern.{Var => PVar, Node => PNode}
 // shape the builder happened to emit; in the graph they fire on anything the rest
 // of the set can reach.
 //
-// `Plus`, `Minus`, `Times` and `Negate` are Int-only in ELMS, so the arithmetic
-// here is total and the zero and one below are unambiguous.
+// `Plus`, `Minus`, `Times`, `Negate` and the bitwise ops are Int-only in ELMS,
+// so the arithmetic here is total and the constants below are unambiguous.
 object Rules {
   private val x = PVar("x")
   private val y = PVar("y")
 
   private val zero = PNode(Op.Const(0), Vector())
   private val one = PNode(Op.Const(1), Vector())
+  private val allOnes = PNode(Op.Const(-1), Vector())
 
   private def op(o: Op.Pure, args: Pattern*) = PNode(o, args.toVector)
 
@@ -54,8 +55,42 @@ object Rules {
       Rule.rewrite(op(Op.Plus, x, op(Op.Plus, y, op(Op.Negate, x))), y),
       Rule.rewrite(op(Op.Plus, x, op(Op.Plus, op(Op.Negate, x), y)), y),
       Rule.rewrite(op(Op.Plus, op(Op.Plus, x, y), op(Op.Negate, x)), y),
-      Rule.rewrite(op(Op.Plus, op(Op.Plus, x, y), op(Op.Negate, y)), x)
+      Rule.rewrite(op(Op.Plus, op(Op.Plus, x, y), op(Op.Negate, y)), x),
+
+      // Bitwise identities. Every rewrite here either drops a node or swaps one
+      // for a smaller one, so nothing in this block can grow the graph the way
+      // associativity did.
+      Rule.rewrite(op(Op.BitAnd, x, x), x),
+      Rule.rewrite(op(Op.BitOr, x, x), x),
+      Rule.rewrite(op(Op.BitXor, x, x), zero),
+      Rule.rewrite(op(Op.BitAnd, x, zero), zero),
+      Rule.rewrite(op(Op.BitAnd, zero, x), zero),
+      Rule.rewrite(op(Op.BitAnd, x, allOnes), x),
+      Rule.rewrite(op(Op.BitAnd, allOnes, x), x),
+      Rule.rewrite(op(Op.BitOr, x, zero), x),
+      Rule.rewrite(op(Op.BitOr, zero, x), x),
+      Rule.rewrite(op(Op.BitOr, x, allOnes), allOnes),
+      Rule.rewrite(op(Op.BitOr, allOnes, x), allOnes),
+      Rule.rewrite(op(Op.BitXor, x, zero), x),
+      Rule.rewrite(op(Op.BitXor, zero, x), x),
+      Rule.rewrite(op(Op.BitXor, x, allOnes), op(Op.BitNot, x)),
+      Rule.rewrite(op(Op.BitXor, allOnes, x), op(Op.BitNot, x)),
+      Rule.rewrite(op(Op.BitNot, op(Op.BitNot, x)), x),
+
+      // Shifting by nothing, and shifting nothing. Neither wants the range guard
+      // `ConstantAnalysis.inWidth` applies to folding: a zero count is in range
+      // everywhere, and zero has no bits for a count to move.
+      Rule.rewrite(op(Op.Shl, x, zero), x),
+      Rule.rewrite(op(Op.Shr, x, zero), x),
+      Rule.rewrite(op(Op.UShr, x, zero), x),
+      Rule.rewrite(op(Op.Shl, zero, x), zero),
+      Rule.rewrite(op(Op.Shr, zero, x), zero),
+      Rule.rewrite(op(Op.UShr, zero, x), zero)
     ),
-    Ruleset.collectConstants(Op.Plus) ++ Ruleset.collectConstants(Op.Times)
+    Ruleset.collectConstants(Op.Plus) ++
+      Ruleset.collectConstants(Op.Times) ++
+      Ruleset.collectConstants(Op.BitAnd) ++
+      Ruleset.collectConstants(Op.BitOr) ++
+      Ruleset.collectConstants(Op.BitXor)
   )
 }

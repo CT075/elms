@@ -32,6 +32,17 @@ object Op {
   case object And extends Control
   case object Or extends Control
 
+  case object BitAnd extends Pure
+  case object BitOr extends Pure
+  case object BitXor extends Pure
+  case object BitNot extends Pure
+  case object Shl extends Pure
+  // `Shr` keeps the sign bit and `UShr` shifts in zeroes, exactly Scala's `>>`
+  // and `>>>`. C has no operator for the latter, so `CCodegen` routes it
+  // through `unsigned int`.
+  case object Shr extends Pure
+  case object UShr extends Pure
+
   case object Print extends Effectful
   case object Println extends Effectful
 

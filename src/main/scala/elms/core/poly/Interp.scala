@@ -60,6 +60,13 @@ trait Interp
     def >(rhs: Rep[Int]): Rep[Boolean] = Rep(lhs.v > rhs.v)
     def <=(rhs: Rep[Int]): Rep[Boolean] = Rep(lhs.v <= rhs.v)
     def >=(rhs: Rep[Int]): Rep[Boolean] = Rep(lhs.v >= rhs.v)
+    def &(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v & rhs.v)
+    def |(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v | rhs.v)
+    def ^(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v ^ rhs.v)
+    def <<(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v << rhs.v)
+    def >>(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v >> rhs.v)
+    def >>>(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v >>> rhs.v)
+    def unary_~ : Rep[Int] = Rep(~lhs.v)
 
   // RangeOps
   extension (st: Rep[Int]) def until(end: Rep[Int]): Rep[Range] = Rep(st.v.until(end.v))

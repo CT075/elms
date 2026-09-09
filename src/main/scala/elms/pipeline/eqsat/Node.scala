@@ -50,16 +50,23 @@ object ElmsNode {
     case Op.Le                => 8
     case Op.Ge                => 9
     case Op.Not               => 10
-    case Op.StringLength      => 11
-    case Op.StringTake        => 12
-    case Op.StringDrop        => 13
-    case Op.StringStartsWith  => 14
-    case Op.StringCharAt      => 15
-    case Op.StringEndsWith    => 16
-    case Op.StringSubstring   => 17
-    case Op.Range             => 18
-    case Op.RangeStart        => 19
-    case Op.RangeEnd          => 20
-    case Op.ArrayLength       => 21
+    case Op.BitAnd            => 11
+    case Op.BitOr             => 12
+    case Op.BitXor            => 13
+    case Op.BitNot            => 14
+    case Op.Shl               => 15
+    case Op.Shr               => 16
+    case Op.UShr              => 17
+    case Op.StringLength      => 18
+    case Op.StringTake        => 19
+    case Op.StringDrop        => 20
+    case Op.StringStartsWith  => 21
+    case Op.StringCharAt      => 22
+    case Op.StringEndsWith    => 23
+    case Op.StringSubstring   => 24
+    case Op.Range             => 25
+    case Op.RangeStart        => 26
+    case Op.RangeEnd          => 27
+    case Op.ArrayLength       => 28
   }
 }

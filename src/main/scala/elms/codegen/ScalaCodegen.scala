@@ -157,6 +157,16 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
         out.emit("!")
         out.emitMaybeParenthesized(t)
       }
+      case View.BitAnd(x, y) => out.emitBinop("&", x, y)
+      case View.BitOr(x, y)  => out.emitBinop("|", x, y)
+      case View.BitXor(x, y) => out.emitBinop("^", x, y)
+      case View.Shl(x, y)    => out.emitBinop("<<", x, y)
+      case View.Shr(x, y)    => out.emitBinop(">>", x, y)
+      case View.UShr(x, y)   => out.emitBinop(">>>", x, y)
+      case View.BitNot(t)    => {
+        out.emit("~")
+        out.emitMaybeParenthesized(t)
+      }
       case View.Range(x, y)   => out.emitBinop("until", x, y)
       case View.RangeStart(t) => {
         out.emitMaybeParenthesized(t)
