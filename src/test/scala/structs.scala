@@ -4,6 +4,7 @@ import scala.language.implicitConversions
 
 import elms.prelude.{_, given}
 import elms.helpers.OptimizingSnippetDriver
+import elms.pipeline.eqsat.Ruleset
 import elms.helpers.DslOps
 import elms.core.StructManifest
 import elms.codegen.CCodegen
@@ -20,7 +21,7 @@ class StructTests extends SnapshotFunSuite {
   ) = super.check(label, actual, ext, accept)
 
   abstract class DslDriverC[A: Typable, B: Typable]
-      extends OptimizingSnippetDriver[A, B](Seq()) with DslOps {
+      extends OptimizingSnippetDriver[A, B](Ruleset(Seq())) with DslOps {
     override val codegen = CCodegen()
   }
 

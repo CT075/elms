@@ -21,8 +21,9 @@ class EqsatSuite extends AnyFunSuite {
     .getOrElse(fail("nothing extracted"))
 
   // `playground.scala`'s worked example: `y + (x + -y)`, and the rules that take
-  // it down to `x`. Sub-negate goes both ways here, unlike the one-way version
-  // `Rules.default` ships, which makes this the harder set to saturate.
+  // it down to `x`. These keep the free associativity and commutativity that
+  // `Rules.default` deliberately drops, which is what makes this the set that can
+  // run away.
   private val addcomm = Rule.equivalence(
     PNode(Plus, Vector(PVar("x"), PVar("y"))),
     PNode(Plus, Vector(PVar("y"), PVar("x")))
@@ -143,13 +144,13 @@ class EqsatSuite extends AnyFunSuite {
   }
 
   test("folding reaches through the algebraic rules") {
-    val g = new EGraph(Ruleset(Rules.default))
+    val g = new EGraph(Rules.default)
     val x = g.addNamedVar("x")
     val one = g.addNode(Const(1), Seq())
     val term = g.addNode(Plus, Seq(g.addNode(Plus, Seq(x, one)), one))
 
-    // Associativity turns `(x + 1) + 1` into `x + (1 + 1)`, and only then is
-    // there a `1 + 1` for the analysis to fold.
+    // `Ruleset.collectConstants` moves the two literals next to each other, and
+    // only then is there a `1 + 1` for the analysis to fold.
     g.saturate()
     assert(extracted(g, term) == E(Plus, Seq(v("x"), E(Const(2), Seq()))))
   }

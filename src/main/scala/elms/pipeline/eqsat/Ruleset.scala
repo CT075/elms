@@ -8,6 +8,7 @@ import foresight.eqsat.rewriting
 import foresight.eqsat.rewriting.patterns.{Pattern as FPattern, PatternMatch}
 
 import elms.core.Op
+import elms.core.instances.given
 
 enum Pattern {
   case Var(name: String)
@@ -99,10 +100,65 @@ object Ruleset {
       atom.toApplier[Graph]
     )
   }
+
+  private def isConstant(
+      m: PatternMatch[ElmsNode],
+      v: FPattern.Var,
+      egraph: Graph
+  ): Boolean = ConstantAnalysis.get(egraph)(m(v), egraph).isDefined
+
+  /** `(a op c1) op c2  ->  a op (c1 op c2)`, only where both `c`s are constants.
+    *
+    * Dragging constants next to each other so `constantFold` can collapse them is
+    * the one thing free associativity was buying. Spelling out just that case
+    * costs a rule per shape and never manufactures an e-class the way the general
+    * rule does.
+    */
+  def collectConstants(op: Op.Pure): Seq[Compiled] = {
+    val a = MixedTree.Atom[ElmsNode, FPattern.Var](FPattern.Var.fresh())
+    val c1 = FPattern.Var.fresh()
+    val c2 = FPattern.Var.fresh()
+
+    def node(
+        l: MixedTree[ElmsNode, FPattern.Var],
+        r: MixedTree[ElmsNode, FPattern.Var]
+    ) = MixedTree.unslotted(ElmsNode.Pure(op), Seq(l, r))
+
+    val pair = node(MixedTree.Atom(c1), MixedTree.Atom(c2))
+
+    def rule(
+        name: String,
+        lhs: MixedTree[ElmsNode, FPattern.Var],
+        rhs: MixedTree[ElmsNode, FPattern.Var]
+    ) = rewriting.Rule(
+      name,
+      lhs.toSearcher[Graph]
+        .filter((m, g) => isConstant(m, c1, g) && isConstant(m, c2, g)),
+      rhs.toApplier[Graph]
+    )
+
+    Seq(
+      // `(a op c1) op c2  ->  a op (c1 op c2)`. `a` stays on the left, because
+      // without commutativity whichever side the applier picks is the only side
+      // extraction will ever see.
+      rule(
+        s"collect-constants-after($op)",
+        node(node(a, MixedTree.Atom(c1)), MixedTree.Atom(c2)),
+        node(a, pair)
+      ),
+      // `(c1 op a) op c2  ->  (c1 op c2) op a`
+      rule(
+        s"collect-constants-before($op)",
+        node(node(MixedTree.Atom(c1), a), MixedTree.Atom(c2)),
+        node(pair, a)
+      )
+    )
+  }
 }
 
-class Ruleset(ruleDecls: Seq[Rule]) {
+class Ruleset(ruleDecls: Seq[Rule], extra: Seq[Ruleset.Compiled] = Seq()) {
   // Names encode the rewrite, so this is the old dedup by `Set[Expansion]` and it
   // also satisfies foresight's requirement that rule names be unique.
-  val compiled: Seq[Ruleset.Compiled] = ruleDecls.flatMap(_.compile).distinctBy(_.name)
+  val compiled: Seq[Ruleset.Compiled] =
+    (ruleDecls.flatMap(_.compile) ++ extra).distinctBy(_.name)
 }

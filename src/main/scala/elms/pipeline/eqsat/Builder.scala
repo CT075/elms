@@ -16,7 +16,10 @@ import elms.runtime.*
 import Stmt.*
 
 object Builder {
-  case class Config(rules: Seq[Rule], cfg: EGraph.Config = EGraph.Config())
+  case class Config(
+      rules: Ruleset = Rules.default,
+      cfg: EGraph.Config = EGraph.Config()
+  )
   enum Handle {
     case Global(name: Name)
     case Local(cls: EClassCall)
@@ -77,7 +80,7 @@ private class RegionStack(fresh: () => Name) {
 
 private class FunctionBuilder(
     name: Name,
-    rules: Seq[Rule],
+    rules: Ruleset,
     config: EGraph.Config,
     predefs: Set[Name],
     fresh: () => Name
@@ -85,7 +88,7 @@ private class FunctionBuilder(
   import Builder.Handle.*
 
   private val counter = Counter()
-  private val graph = EGraph(Ruleset(rules), config)
+  private val graph = EGraph(rules, config)
   private val env = mutable.Map.from((predefs + name).map { name =>
     name -> graph.addNamedVar(name)
   })
