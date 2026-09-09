@@ -22,6 +22,7 @@ class EGraph(
 
   private val graph: Graph = mutable.EGraphWithMetadata(mutable.EGraph.empty[ElmsNode])
   graph.addAnalysis(smallest)
+  graph.addAnalysis(ConstantAnalysis)
 
   def addNode(op: Op.Pure, children: Seq[EClassCall]): EClassCall =
     graph.add(ENode.unslotted(ElmsNode.Pure(op), children))
@@ -33,6 +34,8 @@ class EGraph(
   def union(a: EClassCall, b: EClassCall): Unit = { graph.unionMany(Seq((a, b))) }
 
   def sameClass(a: EClassCall, b: EClassCall): Boolean = graph.areSame(a, b)
+
+  def nodeCount: Int = graph.nodeCount
 
   // An `EClassCall` is a call, not an id: the same class reached through two slot
   // maps gives two unequal calls, and any call held across a union is stale.
@@ -65,8 +68,11 @@ class EGraph(
       case Count(n) => Some(n)
     }
 
-    capped(MaximalRuleApplication
-      .mutable[ElmsNode, Graph, PatternMatch[ElmsNode]](rules.compiled))
+    // Folding is part of the engine rather than something a caller opts into: it
+    // is what makes the pattern rules fire on computed results.
+    val all = Ruleset.constantFold +: rules.compiled
+
+    capped(MaximalRuleApplication.mutable[ElmsNode, Graph, PatternMatch[ElmsNode]](all))
       .withIterationLimit(limit).repeatUntilStable
   }
 

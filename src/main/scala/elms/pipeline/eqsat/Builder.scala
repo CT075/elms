@@ -205,6 +205,7 @@ private class FunctionBuilder(
       Log.warning("BUG: attempted to `extract` without closing all regions")
     }
 
+    graph.saturate()
     elab(regions.extract(), ScopeMap())
   }
 

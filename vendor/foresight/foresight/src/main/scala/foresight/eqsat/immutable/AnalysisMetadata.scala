@@ -95,7 +95,9 @@ final case class AnalysisMetadata[NodeT, A](analysis: Analysis[NodeT, A], result
 
       // Drop merged classes and write back the representative.
       updater.results --= others.map(_.ref)
-      updater.update(representative, result)
+      // ELMS-LOCAL PATCH -- see vendor/PATCHES.md. Was `updater.update`, which
+      // skips the notification when the representative's result is unchanged.
+      updater.unioned(representative, result)
     }
 
     // Propagate changes to a fixpoint.

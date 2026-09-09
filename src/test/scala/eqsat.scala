@@ -104,6 +104,17 @@ class EqsatSuite extends AnyFunSuite {
     assert(extracted(g, big) == E(Plus, Seq(v("x"), v("y"))))
   }
 
+  test("a union refreshes extraction in the classes above it") {
+    val g = new EGraph()
+    val x = g.addNamedVar("x")
+    val one = g.addNode(Const(1), Seq())
+    val inner = g.addNode(Plus, Seq(one, one))
+    val term = g.addNode(Plus, Seq(x, inner))
+
+    g.union(inner, g.addNode(Const(2), Seq()))
+    assert(extracted(g, term) == E(Plus, Seq(v("x"), E(Const(2), Seq()))))
+  }
+
   test("saturation rewrites y + (x + -y) down to x") {
     val g = new EGraph(arith)
     val x = g.addNamedVar("x")
@@ -113,6 +124,27 @@ class EqsatSuite extends AnyFunSuite {
 
     g.saturate()
     assert(extracted(g, root) == v("x"))
+  }
+
+  test("constants fold with no rules in play") {
+    val g = new EGraph()
+    val sum = g
+      .addNode(Plus, Seq(g.addNode(Const(2), Seq()), g.addNode(Const(3), Seq())))
+
+    g.saturate()
+    assert(extracted(g, sum) == E(Const(5), Seq()))
+  }
+
+  test("folding reaches through the algebraic rules") {
+    val g = new EGraph(Ruleset(Rules.default))
+    val x = g.addNamedVar("x")
+    val one = g.addNode(Const(1), Seq())
+    val term = g.addNode(Plus, Seq(g.addNode(Plus, Seq(x, one)), one))
+
+    // Associativity turns `(x + 1) + 1` into `x + (1 + 1)`, and only then is
+    // there a `1 + 1` for the analysis to fold.
+    g.saturate()
+    assert(extracted(g, term) == E(Plus, Seq(v("x"), E(Const(2), Seq()))))
   }
 
   test("saturation reaches a fixpoint under rules that could loop") {

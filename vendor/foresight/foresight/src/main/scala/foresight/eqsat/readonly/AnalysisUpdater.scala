@@ -90,6 +90,24 @@ private[eqsat] abstract class AnalysisUpdater[NodeT, A](analysis: Analysis[NodeT
   }
 
   /**
+   * Records the joined result for a class that has just absorbed other classes.
+   *
+   * Unlike [[update]] this notifies users unconditionally. A union changes which
+   * nodes a class contains even when the joined result happens to equal what the
+   * representative already held, and the absorbed classes' users still need to be
+   * recomputed against the merged class.
+   *
+   * ELMS-LOCAL PATCH -- see vendor/PATCHES.md.
+   *
+   * @param ref    The representative of the merged group.
+   * @param result The joined analysis result.
+   */
+  final def unioned(ref: EClassRef, result: A): Unit = {
+    add(ref, result)
+    onClassImproved(ref)
+  }
+
+  /**
    * Computes the analysis result for an e-class application.
    * @param call The e-class application
    * @return The analysis result for the e-class application

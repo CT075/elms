@@ -24,8 +24,9 @@ abstract class SimpleSnippetDriver[A: Typable, B: Typable] extends SnippetDriver
   override val codegen = ScalaCodegen()
 }
 
-abstract class OptimizingSnippetDriver[A: Typable, B: Typable](rules: Seq[Rule] = Seq())
-    extends SnippetDriver[A, B] {
+abstract class OptimizingSnippetDriver[A: Typable, B: Typable](
+    rules: Seq[Rule] = eqsat.Rules.default
+) extends SnippetDriver[A, B] {
   override val builder = eqsat.Builder(eqsat.Builder.Config(rules))
   override val codegen = ScalaCodegen()
 

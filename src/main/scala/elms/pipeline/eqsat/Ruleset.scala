@@ -2,7 +2,7 @@ package elms.pipeline.eqsat
 
 import scala.collection.mutable
 
-import foresight.eqsat.MixedTree
+import foresight.eqsat.{EClassCall, MixedTree}
 import foresight.eqsat.readonly
 import foresight.eqsat.rewriting
 import foresight.eqsat.rewriting.patterns.{Pattern as FPattern, PatternMatch}
@@ -74,10 +74,31 @@ object Rule {
 
 object Ruleset {
   // Rules are written against the plainest graph type that supports them, and
-  // `Rewrite` is contravariant in it, so they still apply to the metadata-carrying
-  // mutable graph `EGraph` actually holds.
-  type Graph = readonly.EGraph[ElmsNode]
+  // `Rewrite` is contravariant in it, so they still apply to the mutable graph
+  // `EGraph` actually holds. Metadata is in the bound because constant folding
+  // reads `ConstantAnalysis` off the graph it is matching against.
+  type Graph = readonly.EGraphWithMetadata[ElmsNode, readonly.EGraph[ElmsNode]]
   type Compiled = rewriting.Rule[ElmsNode, PatternMatch[ElmsNode], Graph]
+
+  // Not expressible in `Pattern`: the replacement is computed, not matched. Every
+  // class the analysis has a value for gets that value as a member, which is what
+  // lets the rest of the rules fire on folded results.
+  val constantFold: Compiled = {
+    val x = FPattern.Var.fresh()
+    val atom = MixedTree.Atom[ElmsNode, FPattern.Var](x)
+
+    rewriting.Rule(
+      "constant-fold",
+      atom.toSearcher[Graph].flatMap { (subst, egraph) =>
+        ConstantAnalysis.get(egraph)(subst(x), egraph).toSeq.map { c =>
+          val folded = MixedTree
+            .unslotted[ElmsNode, EClassCall](ElmsNode.Pure(c), Seq())
+          subst.bind(x, folded)
+        }
+      },
+      atom.toApplier[Graph]
+    )
+  }
 }
 
 class Ruleset(ruleDecls: Seq[Rule]) {
