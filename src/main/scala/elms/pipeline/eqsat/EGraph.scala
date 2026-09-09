@@ -5,7 +5,7 @@ import foresight.eqsat.extraction.ExtractionAnalysis
 import foresight.eqsat.mutable
 import foresight.eqsat.parallel.ParallelMap
 import foresight.eqsat.rewriting.patterns.PatternMatch
-import foresight.eqsat.saturation.{MaximalRuleApplication, Strategy}
+import foresight.eqsat.saturation.{BackoffRuleApplication, Strategy}
 
 import elms.core.{Name, Op}
 import elms.core.tree as ast
@@ -72,8 +72,16 @@ class EGraph(
     // is what makes the pattern rules fire on computed results.
     val all = Ruleset.constantFold +: rules.compiled
 
-    capped(MaximalRuleApplication.mutable[ElmsNode, Graph, PatternMatch[ElmsNode]](all))
-      .withIterationLimit(limit).repeatUntilStable
+    // Backoff, not maximal application. Associativity and commutativity together
+    // never stop finding matches, so applying every match every iteration grows
+    // the graph without bound long after the useful rewrites have all fired.
+    val base = BackoffRuleApplication.mutable[ElmsNode, Graph, PatternMatch[ElmsNode]](
+      all,
+      cfg.matchLimit,
+      cfg.banLength
+    )
+
+    capped(base).withIterationLimit(limit).repeatUntilStable
   }
 
   // Foresight has no node cap, so this is where `Config.nodeCap` becomes a
@@ -101,5 +109,13 @@ object EGraph {
   private val smallest = ExtractionAnalysis.smallest[ElmsNode]
   private val extractor = smallest.extractor[mutable.EGraph[ElmsNode]]
 
-  case class Config(maxIterations: CountOrInf = 100, nodeCap: CountOrInf = 10000)
+  case class Config(
+      maxIterations: CountOrInf = 100,
+      nodeCap: CountOrInf = 10000,
+      // Matches a rule may apply before it is banned, and for how many iterations.
+      // Both double each time a banned rule comes back, so a rule that keeps
+      // exploding is scheduled less and less often.
+      matchLimit: Int = 1000,
+      banLength: Int = 5
+  )
 }

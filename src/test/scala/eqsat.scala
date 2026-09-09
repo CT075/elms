@@ -20,8 +20,9 @@ class EqsatSuite extends AnyFunSuite {
   private def extracted(g: EGraph, cls: EClassCall): Term = g.extract(cls)
     .getOrElse(fail("nothing extracted"))
 
-  // `y + (x + -y)`, the term the playground has always used as its worked
-  // example, together with the rules that take it down to `x`.
+  // `playground.scala`'s worked example: `y + (x + -y)`, and the rules that take
+  // it down to `x`. Sub-negate goes both ways here, unlike the one-way version
+  // `Rules.default` ships, which makes this the harder set to saturate.
   private val addcomm = Rule.equivalence(
     PNode(Plus, Vector(PVar("x"), PVar("y"))),
     PNode(Plus, Vector(PVar("y"), PVar("x")))
@@ -30,7 +31,7 @@ class EqsatSuite extends AnyFunSuite {
     PNode(Plus, Vector(PVar("x"), PNode(Plus, Vector(PVar("y"), PVar("z"))))),
     PNode(Plus, Vector(PNode(Plus, Vector(PVar("x"), PVar("y"))), PVar("z")))
   )
-  private val subnegate = Rule.rewrite(
+  private val subnegate = Rule.equivalence(
     PNode(Plus, Vector(PVar("x"), PNode(Negate, Vector(PVar("y"))))),
     PNode(Minus, Vector(PVar("x"), PVar("y")))
   )
@@ -39,7 +40,8 @@ class EqsatSuite extends AnyFunSuite {
   private val addzero = Rule
     .rewrite(PNode(Plus, Vector(PVar("x"), PNode(Const(0), Vector()))), PVar("x"))
 
-  private val arith = Ruleset(Seq(addcomm, addassoc, subnegate, subself, addzero))
+  private val playground =
+    Ruleset(Seq(addcomm, addassoc, subnegate, subself, addzero))
 
   test("structurally equal nodes hashcons to one class") {
     val g = emptyGraph
@@ -116,7 +118,7 @@ class EqsatSuite extends AnyFunSuite {
   }
 
   test("saturation rewrites y + (x + -y) down to x") {
-    val g = new EGraph(arith)
+    val g = new EGraph(playground)
     val x = g.addNamedVar("x")
     val y = g.addNamedVar("y")
     val root = g
@@ -124,6 +126,11 @@ class EqsatSuite extends AnyFunSuite {
 
     g.saturate()
     assert(extracted(g, root) == v("x"))
+
+    // Commutativity and associativity together never run out of matches, so this
+    // is the guard on backing rules off. Backed off it settles at 449 nodes;
+    // applying every match every iteration takes it to 16927 and trips the cap.
+    assert(g.nodeCount < 1000, s"saturation ran away: ${g.nodeCount} nodes")
   }
 
   test("constants fold with no rules in play") {

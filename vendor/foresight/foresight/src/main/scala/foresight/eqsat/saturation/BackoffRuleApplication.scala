@@ -3,6 +3,8 @@ package foresight.eqsat.saturation
 import foresight.eqsat.parallel.ParallelMap
 import foresight.eqsat.rewriting.Rewrite
 import foresight.eqsat.immutable.{EGraph, EGraphLike}
+import foresight.eqsat.mutable.{EGraph => MutableEGraph}
+import foresight.eqsat.readonly
 
 import scala.collection.mutable
 import scala.util.Random
@@ -73,9 +75,12 @@ final case class BackoffRuleStats[NodeT,
  * @tparam EGraphT The type of the e-graph.
  * @tparam MatchT The type of rule match.
  */
+// ELMS-LOCAL PATCH -- see vendor/PATCHES.md. The bound was
+// `EGraphLike[NodeT, EGraphT] with EGraph[NodeT]`, which locked this strategy to
+// immutable e-graphs even though the body only calls `searchAndApply`.
 final case class BackoffRuleApplication[NodeT,
                                         RuleT <: Rewrite[NodeT, MatchT, _],
-                                        EGraphT <: EGraphLike[NodeT, EGraphT] with EGraph[NodeT],
+                                        EGraphT <: readonly.EGraph[NodeT],
                                         MatchT](
   rules: Seq[BackoffRule[NodeT, RuleT, MatchT]],
   searchAndApply: SearchAndApply[NodeT, RuleT, EGraphT, MatchT]
@@ -168,7 +173,7 @@ object BackoffRuleApplication {
   def apply[
     NodeT,
     RuleT <: Rewrite[NodeT, MatchT, _],
-    EGraphT <: EGraphLike[NodeT, EGraphT] with EGraph[NodeT],
+    EGraphT <: readonly.EGraph[NodeT],
     MatchT
   ](
      rules: Seq[RuleT],
@@ -206,5 +211,25 @@ object BackoffRuleApplication {
              ruleBanLength: Int
            ): BackoffRuleApplication[NodeT, Rewrite[NodeT, MatchT, EGraphT], EGraphT, MatchT] = {
     apply(rules, ruleApplicationLimit, ruleBanLength, SearchAndApply.immutable[NodeT, EGraphT, MatchT])
+  }
+
+  /**
+   * Creates a [[BackoffRuleApplication]] strategy for mutable e-graphs.
+   *
+   * ELMS-LOCAL PATCH -- see vendor/PATCHES.md. Mirrors
+   * [[MaximalRuleApplication.mutable]], which already had one.
+   *
+   * @param rules The sequence of rewrite rules to schedule with backoff.
+   * @param ruleApplicationLimit The initial number of matches each rule may apply before being banned.
+   * @param ruleBanLength The number of iterations each rule is banned after hitting its match limit.
+   */
+  def mutable[NodeT,
+    EGraphT <: MutableEGraph[NodeT],
+    MatchT](
+             rules: Seq[Rewrite[NodeT, MatchT, EGraphT]],
+             ruleApplicationLimit: Int,
+             ruleBanLength: Int
+           ): BackoffRuleApplication[NodeT, Rewrite[NodeT, MatchT, EGraphT], EGraphT, MatchT] = {
+    apply(rules, ruleApplicationLimit, ruleBanLength, SearchAndApply.mutable[NodeT, EGraphT, MatchT])
   }
 }

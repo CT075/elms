@@ -32,3 +32,17 @@ graph.unionMany(Seq((inner, graph.add(...Const(2)...))))
 
 The patch adds `AnalysisUpdater.unioned`, which is `update` without the
 short-circuit, and calls it from both `onUnionMany`s.
+
+### `BackoffRuleApplication` was locked to immutable e-graphs
+
+`saturation/BackoffRuleApplication.scala`.
+
+The class was bounded `EGraphT <: EGraphLike[NodeT, EGraphT] with EGraph[NodeT]`
+even though its body only calls `searchAndApply.search` and `searchAndApply.apply`,
+neither of which needs an immutable graph. `MaximalRuleApplication` already carries
+the weaker `readonly.EGraph[NodeT]` bound and ships a `.mutable` factory; this one
+did not, so the only scheduling strategy available on the mutable path was
+maximal application.
+
+The patch weakens the bound on the class and on the four-argument `apply`, and
+adds a `mutable` factory mirroring `MaximalRuleApplication.mutable`.
