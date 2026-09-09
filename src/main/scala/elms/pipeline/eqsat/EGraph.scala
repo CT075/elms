@@ -35,7 +35,7 @@ class EGraph(
     }
   }
 
-  private def union(ai: EClass, bi: EClass): EClass = {
+  def union(ai: EClass, bi: EClass): EClass = {
     val a = find(ai)
     val b = find(bi)
     if a == b then a
@@ -47,7 +47,7 @@ class EGraph(
     }
   }
 
-  private def equals(a: EClass, b: EClass): Boolean = find(a) == find(b)
+  def sameClass(a: EClass, b: EClass): Boolean = find(a) == find(b)
 
   private def canonicalize(enode: ENode): ENode = enode match {
     case Node(op, children) => Node(op, children.map(find))
@@ -93,7 +93,7 @@ class EGraph(
     val canon = canonicalize(node)
 
     nodes.get(canon) match {
-      case Some(other) => if !equals(cls, other) then union(cls, other)
+      case Some(other) => if !sameClass(cls, other) then union(cls, other)
       case None        => {
         nodes(canon) = cls
         classes(cls) += canon
@@ -136,6 +136,9 @@ class EGraph(
     }
     Log.info("rebuilding")
 
+    // Repairing a key recomputes its canonical form from scratch, so anything
+    // `repair` adds along the way is re-derived from the key that produced it on
+    // the next pass. One snapshot is enough.
     val oldNodes = nodes.toSeq
 
     while dirty do {
@@ -166,11 +169,6 @@ class EGraph(
       } yield s2 ++ s
   }
 
-  private def matchNode(pat: Pattern, node: ENode): Seq[Subst] = pat match {
-    case PVar(name)         => nodes.get(node).map(cls => Map((name, cls))).toSeq
-    case PNode(op, subpats) => matchNodeImpl(0, node, op, subpats, Map())
-  }
-
   private def matchNodeImpl(
       depth: Int,
       node: ENode,
@@ -193,7 +191,7 @@ class EGraph(
 
     pat match {
       case PVar(name) => subst.get(name) match {
-          case Some(ecls) => if equals(cls, ecls) then Seq(subst.toMap) else Seq()
+          case Some(ecls) => if sameClass(cls, ecls) then Seq(subst.toMap) else Seq()
           case None       => Seq(subst + ((name, cls)))
         }
 
@@ -210,33 +208,32 @@ class EGraph(
   def allClasses: Set[EClass] = { classes.keySet.filter(isCanonical(_)).toSet }
 
   def applyRules(iteration: Int, forceAll: Boolean): Boolean = {
-    val results = new mutable.ArrayBuffer[(EClass, EClass)]
-
     if forceAll then Log.info("forcing all rules")
 
-    for (case rule @ Expansion(lhs, rhs) <- rules.toSeq) {
-      if scheduler.shouldRun(rule, iteration) || forceAll then {
-        var matches = 0
-        var unions = 0
-        val oldNodeCount = nodes.size
+    val scheduled =
+      rules.toSeq.filter(rule => forceAll || scheduler.shouldRun(rule, iteration))
 
-        for (cls <- allClasses) {
-          val substs = ematch(lhs, cls)
-          matches += substs.size
+    // Match everything before unioning anything, so each rule sees the graph as
+    // it stood at the top of the iteration rather than as an earlier rule left it.
+    val matched = scheduled.map { case rule @ Expansion(lhs, rhs) =>
+      val oldNodeCount = nodes.size
+      val pairs = for {
+        cls <- allClasses.toSeq
+        subst <- ematch(lhs, cls)
+      } yield (cls, buildRHS(subst, rhs))
 
-          for (subst <- substs) {
-            val result = buildRHS(subst, rhs)
-            results.append((cls, result))
-          }
-        }
-
-        val newNodeCount = nodes.size - oldNodeCount
-
-        scheduler.recordResult(rule, iteration, matches, newNodeCount, unions)
-      }
+      (rule, pairs, nodes.size - oldNodeCount)
     }
 
-    results.foreach(union)
+    for (rule, pairs, newNodes) <- matched do {
+      val unions = pairs.count { (a, b) =>
+        val merged = !sameClass(a, b)
+        union(a, b)
+        merged
+      }
+
+      scheduler.recordResult(rule, iteration, pairs.length, newNodes, unions)
+    }
 
     return !dirty
   }
@@ -366,7 +363,6 @@ object EGraph {
   case class EClass(id: Int) derives CanEqual
   case class Config(
       maxIterations: CountOrInf = 100,
-      nodeCap: CountOrInf = 10000,
-      namePrefix: String = "x"
+      nodeCap: CountOrInf = 10000
   )
 }

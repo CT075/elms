@@ -2,6 +2,8 @@ package elms.pipeline.eqsat
 
 import scala.collection.mutable
 
+import elms.runtime.Log
+
 private case class State(
     nextRun: Int = 0,
     delay: Int = 1,
@@ -39,7 +41,7 @@ class BackoffScheduler(
 
     val newDelay =
       if shouldBackOff(matches, newNodes, newUnions) then {
-        println(s"backing off of rule $rule")
+        Log.info(s"backing off of rule $rule")
         math.min(old.delay * 2, maxDelay)
       }
       else initialDelay
