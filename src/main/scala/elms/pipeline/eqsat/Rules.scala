@@ -10,8 +10,9 @@ import Pattern.{Var => PVar, Node => PNode}
 // shape the builder happened to emit; in the graph they fire on anything the rest
 // of the set can reach.
 //
-// `Plus`, `Minus`, `Times`, `Negate` and the bitwise ops are Int-only in ELMS,
-// so the arithmetic here is total and the constants below are unambiguous.
+// Every op below is monomorphic in ELMS: `Plus` and the bitwise ops take Ints,
+// `StrictAnd` and its neighbours take Booleans. That is what makes the
+// arithmetic here total and the constants unambiguous.
 object Rules {
   private val x = PVar("x")
   private val y = PVar("y")
@@ -19,6 +20,8 @@ object Rules {
   private val zero = PNode(Op.Const(0), Vector())
   private val one = PNode(Op.Const(1), Vector())
   private val allOnes = PNode(Op.Const(-1), Vector())
+  private val tru = PNode(Op.Const(true), Vector())
+  private val fls = PNode(Op.Const(false), Vector())
 
   private def op(o: Op.Pure, args: Pattern*) = PNode(o, args.toVector)
 
@@ -57,6 +60,26 @@ object Rules {
       Rule.rewrite(op(Op.Plus, op(Op.Plus, x, y), op(Op.Negate, x)), y),
       Rule.rewrite(op(Op.Plus, op(Op.Plus, x, y), op(Op.Negate, y)), x),
 
+      // Eager boolean identities. `&&` and `||` are `Control` ops that never
+      // reach the graph, so none of these can see a short-circuiting operand.
+      // `Not` earns a rule of its own because `x ^ true` produces one.
+      Rule.rewrite(op(Op.StrictAnd, x, x), x),
+      Rule.rewrite(op(Op.StrictOr, x, x), x),
+      Rule.rewrite(op(Op.Xor, x, x), fls),
+      Rule.rewrite(op(Op.StrictAnd, x, tru), x),
+      Rule.rewrite(op(Op.StrictAnd, tru, x), x),
+      Rule.rewrite(op(Op.StrictAnd, x, fls), fls),
+      Rule.rewrite(op(Op.StrictAnd, fls, x), fls),
+      Rule.rewrite(op(Op.StrictOr, x, tru), tru),
+      Rule.rewrite(op(Op.StrictOr, tru, x), tru),
+      Rule.rewrite(op(Op.StrictOr, x, fls), x),
+      Rule.rewrite(op(Op.StrictOr, fls, x), x),
+      Rule.rewrite(op(Op.Xor, x, fls), x),
+      Rule.rewrite(op(Op.Xor, fls, x), x),
+      Rule.rewrite(op(Op.Xor, x, tru), op(Op.Not, x)),
+      Rule.rewrite(op(Op.Xor, tru, x), op(Op.Not, x)),
+      Rule.rewrite(op(Op.Not, op(Op.Not, x)), x),
+
       // Bitwise identities. Every rewrite here either drops a node or swaps one
       // for a smaller one, so nothing in this block can grow the graph the way
       // associativity did.
@@ -91,6 +114,9 @@ object Rules {
       Ruleset.collectConstants(Op.Times) ++
       Ruleset.collectConstants(Op.BitAnd) ++
       Ruleset.collectConstants(Op.BitOr) ++
-      Ruleset.collectConstants(Op.BitXor)
+      Ruleset.collectConstants(Op.BitXor) ++
+      Ruleset.collectConstants(Op.StrictAnd) ++
+      Ruleset.collectConstants(Op.StrictOr) ++
+      Ruleset.collectConstants(Op.Xor)
   )
 }

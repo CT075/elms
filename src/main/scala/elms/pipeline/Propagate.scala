@@ -72,6 +72,25 @@ object Propagate {
         case Ext.Or(Ext.Const[Boolean](false), t)                => t
         case Ext.Or(t, Ext.Const[Boolean](false))                => t
         case Ext.Not(Ext.Const[Boolean](b))                      => Ext.mkConst(!b)
+        case Ext.StrictAnd(Ext.Const[Boolean](x), Ext.Const[Boolean](y)) => Ext
+            .mkConst(x & y)
+        case Ext.StrictAnd(t, Ext.Const[Boolean](true))  => t
+        case Ext.StrictAnd(Ext.Const[Boolean](true), t)  => t
+        case Ext.StrictAnd(t, Ext.Const[Boolean](false)) => Ext.mkConst(false)
+        case Ext.StrictAnd(Ext.Const[Boolean](false), t) => Ext.mkConst(false)
+        case Ext.StrictOr(Ext.Const[Boolean](x), Ext.Const[Boolean](y)) => Ext
+            .mkConst(x | y)
+        case Ext.StrictOr(t, Ext.Const[Boolean](false)) => t
+        case Ext.StrictOr(Ext.Const[Boolean](false), t) => t
+        case Ext.StrictOr(t, Ext.Const[Boolean](true))  => Ext.mkConst(true)
+        case Ext.StrictOr(Ext.Const[Boolean](true), t)  => Ext.mkConst(true)
+        case Ext.Xor(Ext.Const[Boolean](x), Ext.Const[Boolean](y)) => Ext
+            .mkConst(x ^ y)
+        case Ext.Xor(t, Ext.Const[Boolean](false)) => t
+        case Ext.Xor(Ext.Const[Boolean](false), t) => t
+        case Ext.Xor(t, Ext.Const[Boolean](true))  => Ext.Not(t)
+        case Ext.Xor(Ext.Const[Boolean](true), t)  => Ext.Not(t)
+
         case Ext.BitAnd(Ext.Const[Int](x), Ext.Const[Int](y)) => Ext.mkConst(x & y)
         case Ext.BitAnd(t, Ext.Const[Int](0))                 => Ext.mkConst(0)
         case Ext.BitAnd(Ext.Const[Int](0), t)                 => Ext.mkConst(0)

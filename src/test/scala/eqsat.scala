@@ -193,6 +193,39 @@ class EqsatSuite extends AnyFunSuite {
     assert(extracted(g, term) == E(Shl, Seq(E(Const(1), Seq()), E(Const(32), Seq()))))
   }
 
+  test("eager boolean identities collapse") {
+    val g = new EGraph(Rules.default)
+    val b = g.addNamedVar("b")
+    val tru = g.addNode(Const(true), Seq())
+
+    val self = g.addNode(StrictAnd, Seq(b, b))
+    val saturated = g.addNode(StrictOr, Seq(b, tru))
+    val cleared = g.addNode(Xor, Seq(b, b))
+    val negated = g.addNode(Xor, Seq(b, tru))
+    val twice = g.addNode(Not, Seq(g.addNode(Not, Seq(b))))
+
+    g.saturate()
+    assert(extracted(g, self) == v("b"))
+    assert(extracted(g, saturated) == E(Const(true), Seq()))
+    assert(extracted(g, cleared) == E(Const(false), Seq()))
+    assert(extracted(g, negated) == E(Not, Seq(v("b"))))
+    assert(extracted(g, twice) == v("b"))
+  }
+
+  test("boolean constants fold") {
+    val g = new EGraph()
+    val term = g.addNode(
+      Xor,
+      Seq(
+        g.addNode(StrictAnd, Seq(g.addNode(Const(true), Seq()), g.addNode(Const(false), Seq()))),
+        g.addNode(Const(true), Seq())
+      )
+    )
+
+    g.saturate()
+    assert(extracted(g, term) == E(Const(true), Seq()))
+  }
+
   test("saturation reaches a fixpoint under rules that could loop") {
     val g = new EGraph(Ruleset(Seq(addcomm, addassoc)))
     val x = g.addNamedVar("x")

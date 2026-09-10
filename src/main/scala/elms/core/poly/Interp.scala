@@ -1,5 +1,7 @@
 package elms.core.poly.eval
 
+import scala.annotation.targetName
+
 import elms.core.__Virtualized
 import elms.core.{Primitive, Typable, INT, BOOL, CHAR, UNIT, STRING}
 import elms.core.poly._
@@ -46,6 +48,14 @@ trait Interp
     def &&(rhs: => Rep[Boolean]): Rep[Boolean] = Rep(lhs.v && rhs.v)
     def ||(rhs: => Rep[Boolean]): Rep[Boolean] = Rep(lhs.v || rhs.v)
     def unary_! : Rep[Boolean] = Rep(!lhs.v)
+    // `Rep` erases, so these would collide with `IntegerOps`'s operators of the
+    // same name on their JVM signature. The target names keep them apart.
+    @targetName("boolAnd")
+    def &(rhs: Rep[Boolean]): Rep[Boolean] = Rep(lhs.v & rhs.v)
+    @targetName("boolOr")
+    def |(rhs: Rep[Boolean]): Rep[Boolean] = Rep(lhs.v | rhs.v)
+    @targetName("boolXor")
+    def ^(rhs: Rep[Boolean]): Rep[Boolean] = Rep(lhs.v ^ rhs.v)
 
   // EqualityOps
   extension [T](lhs: Rep[T])(using CanEqual[T, T])

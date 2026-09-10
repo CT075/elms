@@ -129,6 +129,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         View.Shl(_, _) | View.Shr(_, _) | View.UShr(_, _) => Some(INT)
     case View.Equals(_, _) | View.Lt(_, _) | View.Gt(_, _) | View.Le(_, _) | View
           .Ge(_, _) | View.And(_, _) | View.Or(_, _) | View.Not(_) => Some(BOOL)
+    case View.StrictAnd(_, _) | View.StrictOr(_, _) | View.Xor(_, _) => Some(BOOL)
     case View.Range(_, _)                      => None
     case View.RangeStart(_) | View.RangeEnd(_) => Some(INT)
 
@@ -265,6 +266,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emit("!")
         out.emitMaybeParenthesizedExpr(env)(t)
       }
+
+      // Two `bool`s under C's `&` promote to `int` and come back 0 or 1, so the
+      // plain operator is already the right thing here.
+      case View.StrictAnd(x, y) => out.emitBinop(env)("&", x, y)
+      case View.StrictOr(x, y)  => out.emitBinop(env)("|", x, y)
+      case View.Xor(x, y)       => out.emitBinop(env)("^", x, y)
 
       case View.BitAnd(x, y) => out.emitBinop(env)("&", x, y)
       case View.BitOr(x, y)  => out.emitBinop(env)("|", x, y)

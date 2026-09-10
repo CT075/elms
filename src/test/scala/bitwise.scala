@@ -39,8 +39,8 @@ class BitwiseTests extends SnapshotFunSuite {
   }
 
   test("the emitted Scala agrees with Int's own operators") {
-    object Snippet extends DslDriver[Int, Int] with Mixed
-        with EvalScalaSnippet[Int, Int] {
+    object Snippet
+        extends DslDriver[Int, Int] with Mixed with EvalScalaSnippet[Int, Int] {
       val prefix = "bitwise-test"
       val name = "bitwise"
       def snippet(x: Rep[Int]): Rep[Int] = mixed(x)

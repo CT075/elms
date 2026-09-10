@@ -32,6 +32,13 @@ object Op {
   case object And extends Control
   case object Or extends Control
 
+  // `And` and `Or` above take regions and compile to an `if`, which is what
+  // makes them `Control`. These take values, so they are `Pure` and the rewrite
+  // rules can see them. `Xor` needs no qualifier: there is no lazy form of it.
+  case object StrictAnd extends Pure
+  case object StrictOr extends Pure
+  case object Xor extends Pure
+
   case object BitAnd extends Pure
   case object BitOr extends Pure
   case object BitXor extends Pure
