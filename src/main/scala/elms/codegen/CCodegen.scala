@@ -32,8 +32,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     prog.functions.foreach { (fname, fdef) => w.emitFunction(topEnv)(fname, fdef) }
   }
 
-  private def renderArgs(name: Name, ty: Type): String =
-    s"${ty.renderParam} ${name.render(cfg.varPrefix)}"
+  // A unit parameter is spelled as C's empty parameter list. `void` cannot name
+  // a parameter, and a caller has nothing to pass for it anyway.
+  private def renderArgs(name: Name, ty: Type): String = ty match {
+    case UNIT => "void"
+    case _    => s"${ty.renderParam} ${name.render(cfg.varPrefix)}"
+  }
 
   extension [A: Primitive](x: A)
     def render: String = summon[Primitive[A]] match {
@@ -281,7 +285,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     }
 
     private def emitExpr(env: Env)(term: Term): Unit = out.withView(term) {
-      case View.V(name) => out.emit(name.render(cfg.varPrefix))
+      // A unit-typed name has no C value behind it. A unit parameter is not in
+      // the signature, and a unit-typed binding declares no variable.
+      case View.V(name) => env.get(name) match {
+        case Some(UNIT) => out.emit("/* unit */")
+        case _          => out.emit(name.render(cfg.varPrefix))
+      }
 
       case const @ View.Const(_) => out.emit(const.value.render(using const.prim))
 
@@ -663,9 +672,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       }
     }
 
+    // Unit arguments are dropped, to match the parameter list `renderArgs` built.
     private def emitArgTerms(env: Env)(args: Seq[Term]): Unit = {
+      val passed = args.filterNot { t => inferType(env)(t).exists(_ == UNIT) }
+
       out.emit("(")
-      args.zipWithIndex.foreach { case (t, i) =>
+      passed.zipWithIndex.foreach { case (t, i) =>
         if i != 0 then out.emit(", ")
         out.emitExpr(env)(t)
       }

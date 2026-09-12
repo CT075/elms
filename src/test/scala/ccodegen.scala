@@ -221,4 +221,26 @@ class CCodegenTests extends SnapshotFunSuite {
     check("nested-regions", snippet.code)
   }
 
+  test("unit parameter") {
+    val snippet = new CSnippetDriver[Unit, Int] {
+      def snippet(x: Rep[Unit]): Rep[Int] = { Builtins.println("hi"); 1 }
+    }
+    check("unit-param", snippet.code)
+  }
+
+  test("unit parameter returned") {
+    val snippet = new CSnippetDriver[Unit, Unit] {
+      def snippet(x: Rep[Unit]): Rep[Unit] = x
+    }
+    check("unit-param-returned", snippet.code)
+  }
+
+  test("unit argument at a call site") {
+    val snippet = new CSnippetDriver[Int, Int] {
+      def noop: Rep[Unit => Int] = fun { (u: Rep[Unit]) => unit(7) }
+      def snippet(x: Rep[Int]): Rep[Int] = noop(unit(())) + x
+    }
+    check("unit-arg", snippet.code)
+  }
+
 }

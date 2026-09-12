@@ -1,8 +1,8 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-bool snippet(void x0);
-bool snippet(void x0) {
+bool snippet(void);
+bool snippet(void) {
   const char * x1 = "a";
   printf("%s\n", x1);
   bool x3 = false;
