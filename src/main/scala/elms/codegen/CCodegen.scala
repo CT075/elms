@@ -100,7 +100,10 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case _                              => false
     }
 
-    private def isConditional: Boolean = View.view(t) match {
+    // Terms with no good C expression form: a `let` needs a GNU statement-
+    // expression, and an `if` needs one as soon as either branch has bindings.
+    private def needsStatements: Boolean = View.view(t) match {
+      case Some(View.Let(_, _, _, _))     => true
       case Some(View.IfThenElse(_, _, _)) => true
       case _                              => false
     }
@@ -118,6 +121,10 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case Assign(x, _) => s"${x.render(cfg.varPrefix)} = "
     }
   }
+
+  // A short-circuiting operator, named by when it goes on to evaluate its right
+  // operand: `&&` only when the left was true, `||` only when it was false.
+  private enum ShortCircuit derives CanEqual { case AndAlso, OrElse }
 
   // What to hand back for `ty` when there is nothing real to hand back.
   private def zero(ty: Type): String = ty match {
@@ -243,19 +250,27 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       ty match {
         case Some(UNIT) => out.emitStmt(env)(e)
 
-        // Declare the variable up front and let each branch assign into it. A
-        // branch can carry let-bindings, and C's `?:` can only hold those inside
-        // a GNU statement-expression.
-        case Some(ty) if e.isConditional => {
-          out.emitln(s"${ty.render} ${x.render(cfg.varPrefix)};")
-          out.emitInto(env, Sink.Assign(x, ty))(e)
+        case Some(ty) => View.view(e) match {
+          case Some(View.And(lhs, rhs)) if rhs.needsStatements =>
+            out.emitShortCircuit(env)(x, lhs, rhs, ShortCircuit.AndAlso)
+
+          case Some(View.Or(lhs, rhs)) if rhs.needsStatements =>
+            out.emitShortCircuit(env)(x, lhs, rhs, ShortCircuit.OrElse)
+
+          // Declare the variable up front and let the term assign into it. Its
+          // pieces only fit in a C expression inside a GNU statement-expression.
+          case _ if e.needsStatements => {
+            out.emitln(s"${ty.render} ${x.render(cfg.varPrefix)};")
+            out.emitInto(env, Sink.Assign(x, ty))(e)
+          }
+
+          case _ => {
+            out.emit(s"${ty.render} ${x.render(cfg.varPrefix)} = ")
+            out.emitExpr(env)(e)
+            out.emitln(";")
+          }
         }
 
-        case Some(ty) => {
-          out.emit(s"${ty.render} ${x.render(cfg.varPrefix)} = ")
-          out.emitExpr(env)(e)
-          out.emitln(";")
-        }
         case None => {
           out.invalidTerm(s"Could not infer C type for let-bound term: $e")
           out.emitln(";")
@@ -506,6 +521,24 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emitExpr(env)(term)
         out.emitln(";")
       }
+    }
+
+    // Evaluate the left operand into `x`, then overwrite it from inside the `if`
+    // that decides whether the right operand runs. Statements belonging to the
+    // right operand cannot sit beside the expression, because it only sometimes
+    // runs.
+    private def emitShortCircuit(
+        env: Env
+    )(x: Name, lhs: Term, rhs: Term, op: ShortCircuit): Unit = {
+      val ty = emitAssign(env)(x, lhs).getOrElse(BOOL)
+      val test = op match {
+        case ShortCircuit.AndAlso => x.render(cfg.varPrefix)
+        case ShortCircuit.OrElse  => s"!${x.render(cfg.varPrefix)}"
+      }
+
+      out.emitln(s"if ($test) {")
+      out.indented { out.emitInto(env, Sink.Assign(x, ty))(rhs) }
+      out.emitln("}")
     }
 
     private def emitInto(env: Env, sink: Sink)(term: Term): Unit = out

@@ -206,4 +206,19 @@ class CCodegenTests extends SnapshotFunSuite {
     check("if-in-region", snippet.code)
   }
 
+  test("nested short-circuit regions") {
+    val snippet = new CSnippetDriver[Int, Boolean] {
+      def snippet(x: Rep[Int]): Rep[Boolean] = {
+        (x > 0) && {
+          Builtins.println("p")
+          (x > 1) && {
+            Builtins.println("q")
+            x > 2
+          }
+        }
+      }
+    }
+    check("nested-regions", snippet.code)
+  }
+
 }
