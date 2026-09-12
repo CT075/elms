@@ -26,6 +26,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       fname -> functionType(fdef)
     }.toMap
 
+    structsIn(prog).foreach { repr => w.emitStructDecl(repr) }
+
     val customs = prog.functions.flatMap { (_, fdef) =>
       customSignatures(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
     }.distinct
@@ -220,6 +222,39 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
   private def functionType(fdef: Function): Type = ARROW(fdef.inty, fdef.outty)
 
+  // Every struct the program mentions, including any reached only through
+  // another struct's fields. A struct is always behind a pointer in the C this
+  // backend emits, so nothing depends on the order these come out in.
+  private def structsIn(prog: Program): Seq[StructRepr] = {
+    def fromType(seen: Set[String])(ty: Type): Seq[StructRepr] = ty match {
+      case STRUCT(repr) if seen(repr.name) => Seq()
+      case STRUCT(repr) => repr +: repr.members.values.toSeq
+          .flatMap(fromType(seen + repr.name))
+      case ARRAY(inner) => fromType(seen)(inner)
+      case ARROW(a, b)  => fromType(seen)(a) ++ fromType(seen)(b)
+      case _            => Seq()
+    }
+
+    def fromOp(op: Op): Seq[Type] = op match {
+      case Op.VarNew(ty)         => Seq(ty)
+      case Op.ArrayNew(ty)       => Seq(ty)
+      case Op.StructGet(repr, _) => Seq(STRUCT(repr))
+      case Op.Custom(_, ty)      => Seq(ty)
+      case _                     => Seq()
+    }
+
+    def fromTerm(term: Term): Seq[Type] = term match {
+      case V(_)                           => Seq()
+      case Let(_, e1, e2)                 => fromTerm(e1) ++ fromTerm(e2)
+      case Function(_, inty, outty, body) => inty +: outty +: fromTerm(body)
+      case E(op, children)                => fromOp(op) ++ children.flatMap(fromTerm)
+    }
+
+    prog.functions.flatMap { (_, fdef) =>
+      (fdef.inty +: fdef.outty +: fromTerm(fdef.body)).flatMap(fromType(Set()))
+    }.distinctBy(_.name)
+  }
+
   // Every custom operation the program calls, with the types of its call site.
   // `Op.Custom` carries only the result type, so the arguments have to come out
   // of inference.
@@ -250,6 +285,15 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     }
 
   extension (out: IndentedWriter)
+    private def emitStructDecl(repr: StructRepr): Unit = {
+      out.emitln(s"struct ${repr.name} {")
+      out.indented {
+        repr.members.foreach { (field, ty) => out.emitln(s"${ty.render} $field;") }
+      }
+      out.emitln("};")
+      out.emitln("")
+    }
+
     private def emitCustomHeader(name: String, ty: Type, argTys: Seq[Type]): Unit = {
       val params =
         if argTys.isEmpty then "void" else argTys.map(_.renderParam).mkString(", ")

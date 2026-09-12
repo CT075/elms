@@ -26,6 +26,13 @@ class StructTests extends SnapshotFunSuite {
   }
 
   case class Foo(x: Int, y: String) derives StructManifest
+  case class Bar(z: Int) derives StructManifest
+  case class Nested(b: Bar, n: Int) derives StructManifest
+
+  // Six fields, so `members` is past the size where a plain `Map` would keep
+  // them in declaration order.
+  case class Wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: String)
+      derives StructManifest
 
   test("get") {
     object Snippet extends DslDriverC[Foo, Int] with DslOps {
@@ -40,4 +47,19 @@ class StructTests extends SnapshotFunSuite {
     }
     check("set", Snippet.code)
   }
+
+  test("nested struct") {
+    object Snippet extends DslDriverC[Nested, Int] with DslOps {
+      def snippet(s: Rep[Nested]): Rep[Int] = { s.get("n").asInstanceOf[Rep[Int]] }
+    }
+    check("nested", Snippet.code)
+  }
+
+  test("fields keep their declaration order") {
+    object Snippet extends DslDriverC[Wide, Int] with DslOps {
+      def snippet(s: Rep[Wide]): Rep[Int] = { s.get("c").asInstanceOf[Rep[Int]] }
+    }
+    check("wide", Snippet.code)
+  }
+
 }
