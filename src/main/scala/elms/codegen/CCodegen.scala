@@ -17,6 +17,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     val w = makeIndentedWriter(out)
 
     w.emitln("#include <stdbool.h>")
+    w.emitln("#include <stdio.h>")
     w.emitln("#include <stdlib.h>")
     w.emitln("")
 
@@ -428,17 +429,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case View.Function(_, _, _, _) => out
           .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
 
-      case View.Print(t) => {
-        out.emit("printf(\"%s\", ")
-        out.emitExpr(env)(t)
-        out.emit(")")
-      }
-
-      case View.Println(t) => {
-        out.emit("printf(\"%s\\n\", ")
-        out.emitExpr(env)(t)
-        out.emit(")")
-      }
+      case View.Print(t)   => out.emitPrintf(env)(t, "")
+      case View.Println(t) => out.emitPrintf(env)(t, "\\n")
 
       case View.StringLength(_)          => ???
       case View.StringCharAt(_, _)       => ???
@@ -673,6 +665,34 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     }
 
     // Unit arguments are dropped, to match the parameter list `renderArgs` built.
+    // `printf` needs the conversion that matches its argument, and `%s` was only
+    // ever right for strings.
+    private def emitPrintf(env: Env)(t: Term, terminator: String): Unit = {
+      def call(conv: String)(arg: => Unit): Unit = {
+        out.emit(s"""printf("$conv$terminator", """)
+        arg
+        out.emit(")")
+      }
+
+      inferType(env)(t) match {
+        case Some(STRING) => call("%s") { out.emitExpr(env)(t) }
+        case Some(INT)    => call("%d") { out.emitExpr(env)(t) }
+        case Some(CHAR)   => call("%c") { out.emitExpr(env)(t) }
+
+        // A `bool` has no conversion of its own, so it prints the two words
+        // Scala's `println` would have printed for it.
+        case Some(BOOL) => call("%s") {
+            out.emitMaybeParenthesizedExpr(env)(t)
+            out.emit(" ? \"true\" : \"false\"")
+          }
+
+        case Some(UNIT) => out.emit(s"""printf("()$terminator")""")
+
+        case ty => out
+            .invalidTerm(s"C backend cannot print a value of type $ty: $t")
+      }
+    }
+
     private def emitArgTerms(env: Env)(args: Seq[Term]): Unit = {
       val passed = args.filterNot { t => inferType(env)(t).exists(_ == UNIT) }
 

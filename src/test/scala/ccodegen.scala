@@ -243,4 +243,17 @@ class CCodegenTests extends SnapshotFunSuite {
     check("unit-arg", snippet.code)
   }
 
+  test("printing each type") {
+    val snippet = new CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        Builtins.println("s")
+        Builtins.println(x)
+        Builtins.println(x > 0)
+        Builtins.print(unit('c'))
+        x
+      }
+    }
+    check("print-types", snippet.code)
+  }
+
 }
