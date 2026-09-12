@@ -503,14 +503,14 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emitExpr(env)(x)
         out.emit(" = ")
         out.emitExpr(env)(v)
-        out.emit(";")
+        out.emitln(";")
       }
 
       case View.StructSet(x, field, v) => {
         out.emitMaybeParenthesizedExpr(env)(x)
         out.emit(s"->$field = ")
         out.emitExpr(env)(v)
-        out.emit(";")
+        out.emitln(";")
       }
 
       case View.App(_, _) => {
