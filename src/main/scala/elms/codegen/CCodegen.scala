@@ -8,6 +8,7 @@ import elms.core.tree.View
 import elms.core.given
 import elms.util.IndentedWriter
 import elms.util.collection.*
+import elms.util.Plumbing.traverse
 import elms.runtime.Log
 
 class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
@@ -21,14 +22,26 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     w.emitln("#include <stdlib.h>")
     w.emitln("")
 
+    val topEnv: Env = prog.functions.map { (fname, fdef) =>
+      fname -> functionType(fdef)
+    }.toMap
+
+    val customs = prog.functions.flatMap { (_, fdef) =>
+      customSignatures(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
+    }.distinct
+
+    customs.groupBy(_._1).foreach { (name, sigs) =>
+      if sigs.length > 1 then
+        Log.error(s"Custom operation `$name` is called at more than one type")
+    }
+
+    customs.foreach { (name, ty, argTys) => w.emitCustomHeader(name, ty, argTys) }
+    if customs.nonEmpty then w.emitln("")
+
     prog.staticData.foreach { (name, data) => w.emitNamedStaticData(name, data) }
     if prog.staticData.nonEmpty then w.emitln("")
 
     prog.functions.foreach { (fname, fdef) => w.emitFunctionHeader(fname, fdef) }
-
-    val topEnv: Env = prog.functions.map { (fname, fdef) =>
-      fname -> functionType(fdef)
-    }.toMap
 
     prog.functions.foreach { (fname, fdef) => w.emitFunction(topEnv)(fname, fdef) }
   }
@@ -207,7 +220,42 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
   private def functionType(fdef: Function): Type = ARROW(fdef.inty, fdef.outty)
 
+  // Every custom operation the program calls, with the types of its call site.
+  // `Op.Custom` carries only the result type, so the arguments have to come out
+  // of inference.
+  private def customSignatures(env: Env)(term: Term): Seq[(String, Type, Seq[Type])] =
+    term match {
+      case V(_) => Seq()
+
+      case Let(x, e1, e2) => customSignatures(env)(e1) ++
+          customSignatures(env.setOrRemove(x, inferType(env)(e1)))(e2)
+
+      case Function(arg, inty, _, body) => customSignatures(env + (arg -> inty))(body)
+
+      case E(op, children) => {
+        val nested = children.flatMap(customSignatures(env))
+
+        op match {
+          case Op.Custom(name, ty) => children.map(inferType(env)).traverse match {
+              case Some(argTys) => (name, ty, argTys.filterNot(_ == UNIT)) +: nested
+              case None         => {
+                Log.error(s"Could not infer the argument types of `$name`: $term")
+                nested
+              }
+            }
+
+          case _ => nested
+        }
+      }
+    }
+
   extension (out: IndentedWriter)
+    private def emitCustomHeader(name: String, ty: Type, argTys: Seq[Type]): Unit = {
+      val params =
+        if argTys.isEmpty then "void" else argTys.map(_.renderParam).mkString(", ")
+      out.emitln(s"${ty.render} $name($params);")
+    }
+
     // CR cwong: merge this with `emitFunction`
     private inline def emitFunctionHeader(fname: Name, fdef: Function): Unit = {
       val Function(arg, inty, outty, body) = fdef

@@ -256,4 +256,12 @@ class CCodegenTests extends SnapshotFunSuite {
     check("print-types", snippet.code)
   }
 
+  test("custom node with no arguments") {
+    val snippet = new CSnippetDriver[Int, Int] {
+      def now: Rep[Int] = unsafeReflect(elms.core.Op.Custom("now", elms.core.INT))
+      def snippet(x: Rep[Int]): Rep[Int] = now + x
+    }
+    check("custom-op-nullary", snippet.code)
+  }
+
 }
