@@ -193,4 +193,17 @@ class CCodegenTests extends SnapshotFunSuite {
     }
     check("custom-op", snippet.code)
   }
+
+  test("if inside a short-circuit region") {
+    val snippet = new CSnippetDriver[Int, Boolean] {
+      def snippet(x: Rep[Int]): Rep[Boolean] = {
+        (x > 0) && {
+          Builtins.println("checking")
+          if x > 5 then x < 100 else x === 3
+        }
+      }
+    }
+    check("if-in-region", snippet.code)
+  }
+
 }

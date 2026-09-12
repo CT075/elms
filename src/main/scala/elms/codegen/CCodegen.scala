@@ -100,7 +100,31 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case _                              => false
     }
 
+    private def isConditional: Boolean = View.view(t) match {
+      case Some(View.IfThenElse(_, _, _)) => true
+      case _                              => false
+    }
+
   private type Env = Map[Name, Type]
+
+  // Where a term's value goes once the statements that compute it have run.
+  private enum Sink(val resultTy: Type) {
+    case Return(ty: Type) extends Sink(ty)
+    case Assign(x: Name, ty: Type) extends Sink(ty)
+
+    // The C that consumes a finished expression, written immediately before it.
+    def store: String = this match {
+      case Return(_)    => "return "
+      case Assign(x, _) => s"${x.render(cfg.varPrefix)} = "
+    }
+  }
+
+  // What to hand back for `ty` when there is nothing real to hand back.
+  private def zero(ty: Type): String = ty match {
+    case INT | CHAR => "0"
+    case BOOL       => "false"
+    case _          => "NULL"
+  }
 
   // CR-soon cwong: We can probably perform `inferType` at the same time
   // we walk the tree to print it. This would be a quadratic speedup in term
@@ -198,7 +222,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       out.emitln(s"${outty.render} ${fname.render(cfg.varPrefix)}($argsS) {")
       out.indented {
         if outty == UNIT then out.emitStmt(env)(body)
-        else out.emitReturnTerm(env, outty)(body)
+        else out.emitInto(env, Sink.Return(outty))(body)
       }
       out.emitln("}")
       out.emitln("")
@@ -218,7 +242,16 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
       ty match {
         case Some(UNIT) => out.emitStmt(env)(e)
-        case Some(ty)   => {
+
+        // Declare the variable up front and let each branch assign into it. A
+        // branch can carry let-bindings, and C's `?:` can only hold those inside
+        // a GNU statement-expression.
+        case Some(ty) if e.isConditional => {
+          out.emitln(s"${ty.render} ${x.render(cfg.varPrefix)};")
+          out.emitInto(env, Sink.Assign(x, ty))(e)
+        }
+
+        case Some(ty) => {
           out.emit(s"${ty.render} ${x.render(cfg.varPrefix)} = ")
           out.emitExpr(env)(e)
           out.emitln(";")
@@ -296,6 +329,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emit(")")
       }
 
+      // Only reachable from an operand position. Anything bound to a variable
+      // takes the statement form in `emitAssign`.
       case View.IfThenElse(guard, tthen, telse) => {
         out.emit("(")
         out.emitExpr(env)(guard)
@@ -473,33 +508,33 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       }
     }
 
-    private def emitReturnTerm(env: Env, outty: Type)(term: Term): Unit = out
+    private def emitInto(env: Env, sink: Sink)(term: Term): Unit = out
       .withView(term) {
         case View.Let(x, _ty, e1, e2) => {
           val ty = emitAssign(env)(x, e1).getOrElse(UNIT)
-          out.emitReturnTerm(env + (x -> ty), outty)(e2)
+          out.emitInto(env + (x -> ty), sink)(e2)
         }
 
         case View.IfThenElse(guard, tthen, telse) => {
           out.emit("if (")
           out.emitExpr(env)(guard)
           out.emitln(") {")
-          out.indented { out.emitReturnTerm(env, outty)(tthen) }
+          out.indented { out.emitInto(env, sink)(tthen) }
           out.emitln("} else {")
-          out.indented { out.emitReturnTerm(env, outty)(telse) }
+          out.indented { out.emitInto(env, sink)(telse) }
           out.emitln("}")
         }
 
         case View.RangeForEach(_, _, _, _) => {
-          out.invalidTerm(s"Cannot return the result of a for-loop in C: $term")
+          out.invalidTerm(s"Cannot use the result of a for-loop in C: $term")
           out.emitln(";")
-          out.emitReturnFallback(outty)
+          out.emitFallback(sink)
         }
 
         case View.While(_, _) => {
-          out.invalidTerm(s"Cannot return the result of a while-loop in C: $term")
+          out.invalidTerm(s"Cannot use the result of a while-loop in C: $term")
           out.emitln(";")
-          out.emitReturnFallback(outty)
+          out.emitFallback(sink)
         }
 
         case View.Function(_, _, _, _) => {
@@ -507,23 +542,22 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
             s"C backend does not support anonymous functions/lambdas: $term"
           )
           out.emitln(";")
-          out.emitReturnFallback(outty)
+          out.emitFallback(sink)
         }
 
         case _ => {
-          out.emit("return ")
+          out.emit(sink.store)
           out.emitExpr(env)(term)
           out.emitln(";")
         }
       }
 
-    private def emitReturnFallback(outty: Type): Unit = outty match {
-      case UNIT       => out.emitln("return;")
-      case INT | CHAR => out.emitln("return 0;")
-      case BOOL       => out.emitln("return false;")
-      case STRING     => out.emitln("return NULL;")
-      case ARRAY(_)   => out.emitln("return NULL;")
-      case STRUCT(_)  => out.emitln("return NULL;")
+    // Store something of the right type after a term that has no C form at all.
+    // The error itself is already logged; this only keeps the surrounding
+    // function compiling.
+    private def emitFallback(sink: Sink): Unit = sink match {
+      case Sink.Return(UNIT) => out.emitln("return;")
+      case _                 => out.emitln(s"${sink.store}${zero(sink.resultTy)};")
     }
 
     private def emitLetExpr(env: Env)(x: Name, e1: Term, e2: Term): Unit = {
