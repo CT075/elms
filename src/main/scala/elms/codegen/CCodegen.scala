@@ -22,9 +22,11 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     w.emitln("#include <stdlib.h>")
     w.emitln("")
 
+    // Static data is named in the program the same way a function is, so it
+    // belongs in the same env: `inferType` has no other way to reach its type.
     val topEnv: Env = prog.functions.map { (fname, fdef) =>
       fname -> functionType(fdef)
-    }.toMap
+    }.toMap ++ prog.staticData.map { (name, data) => name -> data.ty }
 
     structsIn(prog).foreach { repr => w.emitStructDecl(repr) }
 

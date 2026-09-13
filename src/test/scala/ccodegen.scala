@@ -264,4 +264,12 @@ class CCodegenTests extends SnapshotFunSuite {
     check("custom-op-nullary", snippet.code)
   }
 
+  test("static data") {
+    val snippet = new CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] =
+        staticData(Array(3, 1, 4)).get(x) + staticData(7)
+    }
+    check("static-data", snippet.code)
+  }
+
 }
