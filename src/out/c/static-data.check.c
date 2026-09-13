@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static const int x1[] = {3, 1, 4};
+static const int x1[3] = {3, 1, 4};
 static const int x3 = 7;
 
 int snippet(int x0);

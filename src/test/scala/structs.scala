@@ -28,6 +28,7 @@ class StructTests extends SnapshotFunSuite {
   case class Foo(x: Int, y: String) derives StructManifest
   case class Bar(z: Int) derives StructManifest
   case class Nested(b: Bar, n: Int) derives StructManifest
+  case class Buffer(xs: FixedArray[16, Int], n: Int) derives StructManifest
 
   // Six fields, so `members` is past the size where a plain `Map` would keep
   // them in declaration order.
@@ -53,6 +54,30 @@ class StructTests extends SnapshotFunSuite {
       def snippet(s: Rep[Nested]): Rep[Int] = { s.get("n").asInstanceOf[Rep[Int]] }
     }
     check("nested", Snippet.code)
+  }
+
+  test("a fixed-length member is inline storage") {
+    object Snippet extends DslDriverC[Buffer, Int] with DslOps {
+      def snippet(s: Rep[Buffer]): Rep[Int] = { s.get("n").asInstanceOf[Rep[Int]] }
+    }
+    check("fixed-array", Snippet.code)
+  }
+
+  test("a fixed-length member knows its own length") {
+    object Snippet extends DslDriverC[Buffer, Int] with DslOps {
+      def snippet(s: Rep[Buffer]): Rep[Int] = s.get("xs").asInstanceOf[Rep[Array[Int]]]
+        .length
+    }
+    check("fixed-array-length", Snippet.code)
+  }
+
+  // C has no assignment for an array, so the whole-member write has to be
+  // refused rather than emitted as one.
+  test("a fixed-length member cannot be assigned whole") {
+    object Snippet extends DslDriverC[Buffer, Unit] with DslOps {
+      def snippet(s: Rep[Buffer]): Rep[Unit] = s.set("xs", s.get("xs"))
+    }
+    check("fixed-array-set", Snippet.code)
   }
 
   test("fields keep their declaration order") {

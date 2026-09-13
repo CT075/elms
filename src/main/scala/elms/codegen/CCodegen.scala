@@ -97,7 +97,9 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case BOOL         => "bool"
       case CHAR         => "char"
       case STRING       => "const char *"
-      case ARRAY(t)     => s"${t.render} *"
+      // A known length never reaches here. It is storage layout, so it only
+      // goes through `renderDeclarator`; elsewhere the array has decayed.
+      case ARRAY(t, _)  => s"${t.render} *"
       case STRUCT(repr) => s"struct ${repr.name} *"
       case _ => {
         Log.error(s"Attempted to render unsupported type $ty")
@@ -105,12 +107,20 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       }
     }
 
+  // C declarator syntax wraps the name: a fixed-length array is `int xs[16]`,
+  // not `int[16] xs`. Only the positions that lay out storage need it, which is
+  // struct members and static data.
+  private def renderDeclarator(ty: Type, name: String): String = ty match {
+    case ARRAY(inner, Some(n)) => s"${inner.render} $name[$n]"
+    case _                     => s"${ty.render} $name"
+  }
+
   extension (ty: Type)
     private def render: String = renderType(ty)
     private def renderParam: String = ty.render
     private def renderElement: String = ty match {
-      case ARRAY(t) => t.render
-      case _        => ty.render
+      case ARRAY(t, _) => t.render
+      case _           => ty.render
     }
 
   extension (t: Term)
@@ -196,8 +206,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     case View.ArrayNew(ty, _) => Some(ARRAY(ty))
 
     case View.ArrayGet(arr, _) => inferType(env)(arr) match {
-        case Some(ARRAY(elemTy)) => Some(elemTy)
-        case _                   => None
+        case Some(ARRAY(elemTy, _)) => Some(elemTy)
+        case _                      => None
       }
     case View.ArraySet(_, _, _)         => Some(UNIT)
     case View.ArrayLength(_)            => Some(INT)
@@ -224,6 +234,14 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
   private def functionType(fdef: Function): Type = ARROW(fdef.inty, fdef.outty)
 
+  // `Op.StructSet` carries only the field name, so the receiver's type is the
+  // only route to what that field was declared as.
+  private def memberType(env: Env)(receiver: Term, field: String): Option[Type] =
+    inferType(env)(receiver) match {
+      case Some(STRUCT(repr)) => repr.get(field)
+      case _                  => None
+    }
+
   // Every struct the program mentions, including any reached only through
   // another struct's fields. A struct is always behind a pointer in the C this
   // backend emits, so nothing depends on the order these come out in.
@@ -232,9 +250,9 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case STRUCT(repr) if seen(repr.name) => Seq()
       case STRUCT(repr) => repr +: repr.members.values.toSeq
           .flatMap(fromType(seen + repr.name))
-      case ARRAY(inner) => fromType(seen)(inner)
-      case ARROW(a, b)  => fromType(seen)(a) ++ fromType(seen)(b)
-      case _            => Seq()
+      case ARRAY(inner, _) => fromType(seen)(inner)
+      case ARROW(a, b)     => fromType(seen)(a) ++ fromType(seen)(b)
+      case _               => Seq()
     }
 
     def fromOp(op: Op): Seq[Type] = op match {
@@ -291,7 +309,9 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     private def emitStructDecl(repr: StructRepr): Unit = {
       out.emitln(s"struct ${repr.name} {")
       out.indented {
-        repr.members.foreach { (field, ty) => out.emitln(s"${ty.render} $field;") }
+        repr.members.foreach { (field, ty) =>
+          out.emitln(s"${renderDeclarator(ty, field)};")
+        }
       }
       out.emitln("};")
       out.emitln("")
@@ -469,10 +489,17 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emit("})")
       }
 
-      case View.ArrayNew(ty, t) => {
-        out.emit(s"(${ARRAY(ty).render})malloc(sizeof(${ty.render}) * ")
-        out.emitExpr(env)(t)
-        out.emit(")")
+      // An array of fixed-length arrays needs `int (*)[16]` and a `sizeof` to
+      // match, and `renderType` has no declarator to build either from.
+      case View.ArrayNew(ty, t) => ty match {
+        case ARRAY(_, Some(_)) => out
+            .invalidTerm(s"C backend cannot allocate fixed-length arrays: $ty")
+
+        case _ => {
+          out.emit(s"(${ARRAY(ty).render})malloc(sizeof(${ty.render}) * ")
+          out.emitExpr(env)(t)
+          out.emit(")")
+        }
       }
 
       case View.ArrayGet(arr, i) => {
@@ -488,9 +515,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emit("})")
       }
 
-      case View.ArrayLength(arr) => out.invalidTerm(
-          s"C backend cannot emit array length without explicit length metadata: $arr"
-        )
+      case View.ArrayLength(arr) => inferType(env)(arr) match {
+        case Some(ARRAY(_, Some(n))) => out.emit(n.toString)
+        case _ => out.invalidTerm(
+            s"C backend cannot emit array length without explicit length metadata: $arr"
+          )
+      }
 
       case View.StructGet(repr, t, field) => {
         out.emitMaybeParenthesizedExpr(env)(t)
@@ -593,11 +623,26 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emitln(";")
       }
 
-      case View.StructSet(x, field, v) => {
-        out.emitMaybeParenthesizedExpr(env)(x)
-        out.emit(s"->$field = ")
-        out.emitExpr(env)(v)
-        out.emitln(";")
+      // A fixed-length member is inline storage, and C has no assignment
+      // operator for an array, so `s->xs = v` does not compile. Indexing into
+      // the member is unaffected and still goes through `ArraySet`.
+      //
+      // CR-someday cwong: To allow the whole-member write, we could emit
+      // `memcpy(s->xs, v, sizeof s->xs)`. However, that may lead to soundness
+      // errors, as we won't be able to ensure that the source and target are
+      // the right length due to `structSet` taking `Rep[Any]`.
+      case View.StructSet(x, field, v) => memberType(env)(x, field) match {
+        case Some(ARRAY(_, Some(_))) => {
+          out.invalidTerm(s"Cannot assign to fixed-length array member `$field`")
+          out.emitln(";")
+        }
+
+        case _ => {
+          out.emitMaybeParenthesizedExpr(env)(x)
+          out.emit(s"->$field = ")
+          out.emitExpr(env)(v)
+          out.emitln(";")
+        }
       }
 
       case View.App(_, _) => {
@@ -805,16 +850,9 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       out.emitMaybeParenthesizedExpr(env)(y)
     }
 
-    private def emitNamedStaticData(name: Name, data: StaticData): Unit = data match {
-      case s @ Scalar(x) =>
-        val ty = s.prim
-        out.emitln(s"static const ${ty.render} ${name.render(cfg.varPrefix)} = ${x
-            .render(using s.prim)};")
-
-      case SArray(elemTy, elems) =>
-        out.emit(s"static const ${elemTy.render} ${name.render(cfg.varPrefix)}[] = ")
-        out.emit(renderStaticDataInitializer(data))
-        out.emitln(";")
+    private def emitNamedStaticData(name: Name, data: StaticData): Unit = {
+      val decl = renderDeclarator(data.ty, name.render(cfg.varPrefix))
+      out.emitln(s"static const $decl = ${renderStaticDataInitializer(data)};")
     }
 
     private def renderStaticDataInitializer(data: StaticData): String = data match {
