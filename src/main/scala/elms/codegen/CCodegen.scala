@@ -240,6 +240,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     def fromOp(op: Op): Seq[Type] = op match {
       case Op.VarNew(ty)         => Seq(ty)
       case Op.ArrayNew(ty)       => Seq(ty)
+      case ai @ Op.ArrayInit(_)  => Seq(ARRAY(ai.elemTy))
       case Op.StructGet(repr, _) => Seq(STRUCT(repr))
       case Op.Custom(_, ty)      => Seq(ty)
       case _                     => Seq()

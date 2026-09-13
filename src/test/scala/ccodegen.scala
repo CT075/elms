@@ -272,4 +272,18 @@ class CCodegenTests extends SnapshotFunSuite {
     check("static-data", snippet.code)
   }
 
+  // `ArrayInit` has no implementation yet. What this pins is that reaching it
+  // degrades into a reported error rather than throwing out of the pipeline.
+  test("an unimplemented op is reported, not thrown") {
+    val snippet = new CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val arr: Rep[Array[Int]] = unsafeReflect(elms.core.Op.ArrayInit(Seq(1, 2, 3)))
+        arr.get(x)
+      }
+    }
+    // No snapshot: the output is deliberately not valid C, and pinning it would
+    // be a trap for anyone who later compiles every check file.
+    assert(snippet.code.contains("ERROR") && snippet.code.contains("ArrayInit"))
+  }
+
 }
