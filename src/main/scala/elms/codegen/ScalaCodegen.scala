@@ -278,7 +278,7 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
       }
       case View.StructSet(t, field, v) => {
         out.emitMaybeParenthesized(t)
-        out.emit(".$field = ")
+        out.emit(s".$field = ")
         out.emitTerm(v)
       }
     })
