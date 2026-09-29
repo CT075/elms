@@ -6,16 +6,28 @@ sealed trait Op derives CanEqual
 
 object Op {
   sealed abstract class Pure extends Op
+
+  // An effect, split by what it does to memory.
+  //
+  // A `Read` observes the store: it has to stay in order relative to a write,
+  // but nothing forces it to be emitted if no one wants its value, and two of
+  // them with no write between are the same value.
+  //
+  // A `Write` changes the store, or does something the compiler cannot see
+  // through such as I/O or a call. Always emitted, always in order.
   sealed abstract class Effectful extends Op
+  sealed abstract class Read extends Effectful
+  sealed abstract class Write extends Effectful
+
   sealed abstract class Control extends Op
 
   case class Const[T](val v: T)(using val prim: Primitive[T]) extends Pure
 
-  case class VarNew(val typ: Type) extends Effectful
-  case object VarGet extends Effectful
-  case object VarSet extends Effectful
+  case class VarNew(val typ: Type) extends Write
+  case object VarGet extends Read
+  case object VarSet extends Write
 
-  case object App extends Effectful
+  case object App extends Write
 
   case object Negate extends Pure
   case object Plus extends Pure
@@ -50,8 +62,8 @@ object Op {
   case object Shr extends Pure
   case object UShr extends Pure
 
-  case object Print extends Effectful
-  case object Println extends Effectful
+  case object Print extends Write
+  case object Println extends Write
 
   case object StringLength extends Pure
   case object StringTake extends Pure
@@ -69,18 +81,18 @@ object Op {
   case object IfThenElse extends Control
   case object While extends Control
 
-  case class ArrayNew(val typ: Type) extends Effectful
+  case class ArrayNew(val typ: Type) extends Write
   // The element type is named rather than left to a context bound, so a backend
   // can read it off the op the way it reads `ArrayNew`'s.
-  case class ArrayInit[T](init: Seq[T])(using val elem: Typable[T]) extends Effectful {
+  case class ArrayInit[T](init: Seq[T])(using val elem: Typable[T]) extends Write {
     def elemTy: Type = elem.identity
   }
-  case object ArrayGet extends Effectful
-  case object ArraySet extends Effectful
+  case object ArrayGet extends Read
+  case object ArraySet extends Write
   case object ArrayLength extends Pure
 
-  case class StructGet(val repr: StructRepr, val field: String) extends Effectful
-  case class StructSet(val field: String) extends Effectful
+  case class StructGet(val repr: StructRepr, val field: String) extends Read
+  case class StructSet(val field: String) extends Write
 
-  case class Custom(val name: String, val ty: Type) extends Effectful
+  case class Custom(val name: String, val ty: Type) extends Write
 }

@@ -18,7 +18,14 @@ import Stmt.*
 object Builder {
   case class Config(
       rules: Ruleset = Rules.default,
-      cfg: EGraph.Config = EGraph.Config()
+      cfg: EGraph.Config = EGraph.Config(),
+      // Whether to drop a read whose value nothing wanted.
+      //
+      // On by default, and worth being able to turn off. A read is sometimes
+      // written for something other than its value: a checker that reasons
+      // about the residue sees one fewer access when the read goes, and a
+      // bounds obligation goes with it.
+      dropDeadReads: Boolean = true
   )
   enum Handle {
     case Global(name: Name)
@@ -80,19 +87,32 @@ private class RegionStack(fresh: () => Name) {
 
 private class FunctionBuilder(
     name: Name,
-    rules: Ruleset,
-    config: EGraph.Config,
+    config: Builder.Config,
     predefs: Set[Name],
     fresh: () => Name
 ) {
   import Builder.Handle.*
 
   private val counter = Counter()
-  private val graph = EGraph(rules, config)
+  private val graph = EGraph(config.rules, config.cfg)
   private val env = mutable.Map.from((predefs + name).map { name =>
     name -> graph.addNamedVar(name)
   })
   private val regions = RegionStack(fresh)
+
+  // Reads already made and not yet invalidated, so a repeat of one is the name
+  // the first one bound rather than a second load.
+  //
+  // Keyed on `EClassRef` and not `EClassCall`, for the reason `ScopeMap` is:
+  // two calls can denote the same class, and a call held across a union denotes
+  // nothing.
+  private val reads = mutable.Map[(Op.Read, Seq[EClassRef]), EClassCall]()
+
+  // The cell each read's binding carries, so elaboration can find it by the
+  // name the binding introduced.
+  private val weakByName = mutable.Map[Name, Weak]()
+
+  private def invalidateReads(): Unit = reads.clear()
 
   def register(name: Name): EClassCall = {
     env(name) = graph.addNamedVar(name)
@@ -137,9 +157,13 @@ private class FunctionBuilder(
   ): Unit = regions.push(name, cls, Lambda(arg, inty, outty, body.asStmt))
 
   def reflect(op: Op, children: Seq[Builder.Handle]): Builder.Handle = op match {
-    case pure: Op.Pure     => reflectPure(pure, children.map(_.unwrap))
-    case eff: Op.Effectful => reflectEffect(eff, children.map(_.unwrap))
-    case ctrl: Op.Control  => reflectControl(ctrl, children)
+    case pure: Op.Pure => reflectPure(pure, children.map(_.unwrap))
+    case r: Op.Read    => reflectRead(r, children.map(_.unwrap))
+    case w: Op.Write   => {
+      invalidateReads()
+      reflectEffect(w, children.map(_.unwrap))
+    }
+    case ctrl: Op.Control => reflectControl(ctrl, children)
   }
 
   private def reflectPure(op: Op.Pure, children: Seq[EClassCall]): Builder.Handle =
@@ -153,6 +177,21 @@ private class FunctionBuilder(
     val cls = graph.addNamedVar(name)
     regions.push(name, cls, Effect(op, children))
     Local(cls)
+  }
+
+  private def reflectRead(op: Op.Read, children: Seq[EClassCall]): Builder.Handle = {
+    val key = (op, children.map(graph.ref))
+
+    Local(graph.canonical(reads.getOrElseUpdate(
+      key, {
+        val name = fresh()
+        val cls = graph.addNamedVar(name)
+        val weak = Weak()
+        weakByName(name) = weak
+        regions.push(name, cls, Read(op, children, weak))
+        cls
+      }
+    )))
   }
 
   private def reflectControl(
@@ -195,8 +234,19 @@ private class FunctionBuilder(
 
   def ret(handle: Builder.Handle): Unit = regions.ret(handle.unwrap)
 
-  def openRegion(): Unit = regions.openRegion()
+  // Both boundaries clear the memo, because the builder walks a region's body
+  // once and in order. A write inside the body is reached after a read made
+  // before the region, so at that read the memo still holds a value the write
+  // is about to invalidate, and reusing it makes every iteration of a loop see
+  // the original. There is no fixpoint here to discover that with, so the
+  // boundary is where it gets paid for.
+  def openRegion(): Unit = {
+    invalidateReads()
+    regions.openRegion()
+  }
+
   def closeRegion(): (Name, EClassCall, Stmt) = {
+    invalidateReads()
     val stmt = regions.closeRegion()
     val name = fresh()
     val cls = graph.addNamedVar(name)
@@ -209,7 +259,37 @@ private class FunctionBuilder(
     }
 
     graph.saturate()
-    elab(regions.extract(), ScopeMap())
+    val body = elab(regions.extract(), ScopeMap())
+    if config.dropDeadReads then dropUndemanded(body) else body
+  }
+
+  // A read's class resolves to the name its statement bound, so any term the
+  // elaboration produces that mentions that name is something wanting the read.
+  private def recordDemand(t: ast.Term): Unit = t match {
+    case ast.V(name)        => weakByName.get(name).foreach { _.demanded = true }
+    case ast.E(_, children) => children.foreach(recordDemand)
+    case ast.Let(_, e1, e2) => { recordDemand(e1); recordDemand(e2) }
+    case ast.Function(_, _, _, body) => recordDemand(body)
+  }
+
+  // Drops the bindings whose weak cell was never set.
+  //
+  // No liveness analysis: the elaboration already recorded, per read, whether
+  // anything resolved its class. All that is left is deleting the ones nothing
+  // did, which is one walk and no per-binding scan of the body.
+  private def dropUndemanded(t: ast.Term): ast.Term = t match {
+    case ast.Let(x, e1, e2) => {
+      val tail = dropUndemanded(e2)
+      val bound = dropUndemanded(e1)
+
+      if weakByName.get(x).exists(!_.demanded) then tail else ast.Let(x, bound, tail)
+    }
+
+    case ast.Function(arg, inty, outty, body) => ast
+        .Function(arg, inty, outty, dropUndemanded(body))
+
+    case ast.E(op, children) => ast.E(op, children.map(dropUndemanded))
+    case v @ ast.V(_)        => v
   }
 
   // Keyed on `EClassRef` rather than `EClassCall`: two calls can denote the same
@@ -239,6 +319,7 @@ private class FunctionBuilder(
       val name = fresh()
       val result = graph.extract(cls)
         .getOrElse { throw LMSRuntimeException(s"BUG: invalid EClassCall $cls") }
+      recordDemand(result)
       cache(cls) = name
       (Seq((name, result)), ast.V(name))
     }
@@ -258,7 +339,8 @@ private class FunctionBuilder(
             (prefixAcc ++ prefix, terms :+ term)
         }.mapRight(ast.E(op, _))
     }
-    case If(cond, thn, els) => {
+    case Read(op, children, _) => elabImpl(Effect(op, children), cache)
+    case If(cond, thn, els)    => {
       val (prefix, c) = elabCls(cond, cache)
       val t = elab(thn, cache.enter)
       val e = elab(els, cache.enter)
@@ -313,7 +395,7 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
 
   private def topfun(name: Name, arg: Name, inty: Type, outty: Type): FunctionStub = {
     def fill(body: => Exp): Unit = {
-      val builder = FunctionBuilder(name, cfg.rules, cfg.cfg, predefs(), this.fresh)
+      val builder = FunctionBuilder(name, cfg, predefs(), this.fresh)
       current.push(builder)
       val tail = body
       builder.ret(tail)
