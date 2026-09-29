@@ -4,7 +4,7 @@ import elms.core.*
 import elms.core.Op.*
 import elms.core.Name
 import elms.core.tree as ast
-import elms.core.tree.View
+import elms.core.tree.{Note, View}
 import elms.util.IndentedWriter
 import elms.runtime.Log
 
@@ -44,15 +44,26 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
 
   extension (ty: Type) private def render: String = renderType(ty)
 
+  // What an interpolated argument looks like in the text. It goes through the
+  // same parenthesisation an operand gets, or `$y * 2` with `y = a + b` comes
+  // out as `a + b * 2`, which is a different predicate.
+  private def operand(t: ast.Term): String = captured { w =>
+    w.emitMaybeParenthesized(t)
+  }
+
   extension (out: IndentedWriter)
     private def invalidTerm(msg: String): Unit = {
       Log.error(msg)
       out.emit("???")
     }
 
-    private def emitFunction(fname: Name, fdef: Function): Unit = {
-      val Function(arg, inty, outty, body) = fdef
+    private def emitNotes(notes: Seq[Note], side: Note.Side): Unit =
+      renderNotes(notes, side, operand).foreach(out.emitln)
 
+    private def emitFunction(fname: Name, fdef: Function): Unit = {
+      val Function(arg, inty, outty, body, notes) = fdef
+
+      renderContract(notes, operand).foreach(out.emitln)
       val argsS = renderArgs(arg, inty)
       val header = s"def ${fname.render(cfg.varPrefix)}($argsS): ${outty.render} = {"
       out.emitln(header)
@@ -64,7 +75,7 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
     private def emitMaybeParenthesized(t: Term): Unit = {
       val (l, r) = t match {
         case V(_) | E(_: Const[_], Nil) => ("", "")
-        case Let(_, _, _)               => ("{", "}")
+        case Let(_, _, _, _)            => ("{", "}")
         case _                          => ("(", ")")
       }
       out.emit(l)
@@ -74,8 +85,8 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
 
     private def emitAsExpr(t: Term): Unit = {
       val (l, r) = t match {
-        case Let(_, _, _) => ("{", "}")
-        case _            => ("", "")
+        case Let(_, _, _, _) => ("{", "}")
+        case _               => ("", "")
       }
       out.emit(l)
       out.emitTerm(t)
@@ -83,25 +94,41 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
     }
 
     private def emitTerm(term: Term): Unit = ast.view(term).map({
-      case View.V(name)               => out.emit(name.render(cfg.varPrefix))
-      case View.Let(x, mutTy, e1, e2) => {
-        // CR cwong: This sucks. Instead, we should use the same `inferType`
-        // mechanism as CCodegen to determine whether the RHS is a function type.
-        val (vkd, annotation) = mutTy match {
-          case Some(ty) => ("var", s": ${ty.render}")
-          case None     => e1 match {
-              case Function(_, inty, outty, _) =>
-                ("lazy val", s": (${inty.render} => ${outty.render})")
-              case _ => ("val", "")
+      case View.V(name)                      => out.emit(name.render(cfg.varPrefix))
+      case View.Let(x, mutTy, e1, e2, notes) => {
+        out.emitNotes(notes, Note.Side.Before)
+
+        View.view(e1) match {
+          // A comment binds nothing, so the text goes where the dead `val`
+          // would have gone.
+          case Some(View.Comment(parts, meta, args)) =>
+            renderInterpolated(parts, args.map(operand), meta).foreach(out.emitln)
+
+          case _ => {
+            // CR cwong: This sucks. Instead, we should use the same `inferType`
+            // mechanism as CCodegen to determine whether the RHS is a function
+            // type.
+            val (vkd, annotation) = mutTy match {
+              case Some(ty) => ("var", s": ${ty.render}")
+              case None     => e1 match {
+                  case Function(_, inty, outty, _, _) =>
+                    ("lazy val", s": (${inty.render} => ${outty.render})")
+                  case _ => ("val", "")
+                }
             }
+
+            out.emit(s"$vkd ${x.render(cfg.varPrefix)}$annotation = ")
+            out.emitAsExpr(e1)
+            out.emitln("")
+          }
         }
 
-        out.emit(s"$vkd ${x.render(cfg.varPrefix)}$annotation = ")
-        out.emitAsExpr(e1)
-        out.emitln("")
+        out.emitNotes(notes, Note.Side.After)
         out.emitTerm(e2)
       }
-      case View.Function(arg, inty, _outty, body) => {
+      case View.Comment(parts, meta, args) =>
+        renderInterpolated(parts, args.map(operand), meta).foreach(out.emitln)
+      case View.Function(arg, inty, _outty, body, _) => {
         out.emit("(")
         out.emit(renderArgs(arg, inty))
         out.emitln(") => {")

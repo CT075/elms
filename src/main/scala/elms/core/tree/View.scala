@@ -1,6 +1,6 @@
 package elms.core.tree
 
-import elms.core.{Type, Primitive, Op, Name, StructRepr}
+import elms.core.{Type, Primitive, Op, Name, StructRepr, CommentMeta}
 import elms.runtime.Log
 
 def view(t: Term): Option[View] = View.view(t)
@@ -44,22 +44,33 @@ object View {
     def into: Term = elms.core.tree.V(name)
   }
 
-  final case class Function(arg: Name, inty: Type, outty: Type, body: Term)
-      extends View {
-    def into: Term = elms.core.tree.Function(arg, inty, outty, body)
+  final case class Function(
+      arg: Name,
+      inty: Type,
+      outty: Type,
+      body: Term,
+      notes: Seq[Note]
+  ) extends View {
+    def into: Term = elms.core.tree.Function(arg, inty, outty, body, notes)
   }
 
   final case class Const[T](value: T)(using val prim: Primitive[T]) extends View {
     def into: Term = E(Op.Const(value), Seq())
   }
 
-  final case class Let(x: Name, mty: Option[Type], e1: Term, e2: Term) extends View {
+  final case class Let(
+      x: Name,
+      mty: Option[Type],
+      e1: Term,
+      e2: Term,
+      notes: Seq[Note]
+  ) extends View {
     def into: Term = {
       val bound = mty match {
         case Some(ty) => VarNew(ty, e1).into
         case None     => e1
       }
-      elms.core.tree.Let(x, bound, e2)
+      elms.core.tree.Let(x, bound, e2, notes)
     }
   }
 
@@ -212,6 +223,13 @@ object View {
     def into: Term = E(Op.ArrayLength, Seq(t))
   }
 
+  // Arity is `parts.length - 1` rather than fixed, so a mismatch is reported
+  // here rather than reaching a backend as a silently short interpolation.
+  final case class Comment(parts: Seq[String], meta: Option[CommentMeta], args: Seq[Term])
+      extends View {
+    def into: Term = E(Op.Comment(parts, meta), args)
+  }
+
   final case class Print(t: Term) extends View {
     def into: Term = E(Op.Print, Seq(t))
   }
@@ -264,16 +282,16 @@ object View {
   def view(t: Term): Option[View] = t match {
     case elms.core.tree.V(name) => Some(V(name))
 
-    case elms.core.tree.Function(arg, inty, outty, body) =>
-      Some(Function(arg, inty, outty, body))
+    case elms.core.tree.Function(arg, inty, outty, body, notes) =>
+      Some(Function(arg, inty, outty, body, notes))
 
-    case elms.core.tree.Let(x, me1, e2) =>
+    case elms.core.tree.Let(x, me1, e2, notes) =>
       val (mty, e1) = me1 match {
         case E(Op.VarNew(ty), s) => arity1("VarNew", s).map(e => (Some(ty), e))
             .getOrElse((None, me1))
         case _ => (None, me1)
       }
-      Some(Let(x, mty, e1, e2))
+      Some(Let(x, mty, e1, e2, notes))
 
     case E(c @ Op.Const(_), s) => {
       if s.nonEmpty then warnTooMany("`Const`")
@@ -341,6 +359,15 @@ object View {
     case E(Op.ArraySet, s)     => arity3("ArraySet", s).map(ArraySet(_, _, _))
     case E(Op.ArrayLength, s)  => arity1("ArrayLength", s).map(ArrayLength(_))
 
+    case E(Op.Comment(parts, meta), s) =>
+      if s.length == parts.length - 1 then Some(Comment(parts, meta, s))
+      else {
+        Log.error(
+          s"BUG: `Comment` with ${s.length} children for ${parts.length} parts"
+        )
+        None
+      }
+
     case E(Op.Print, s)   => arity1("Print", s).map(Print(_))
     case E(Op.Println, s) => arity1("Println", s).map(Println(_))
 
@@ -369,8 +396,17 @@ object View {
     }
 
     object Let {
-      def unapply(t: Term): Option[(Name, Option[Type], Term, Term)] = View.view(t)
-        .collect { case View.Let(x, mty, e1, e2) => (x, mty, e1, e2) }
+      def unapply(t: Term): Option[(Name, Option[Type], Term, Term, Seq[Note])] = View
+        .view(t)
+        .collect { case View.Let(x, mty, e1, e2, notes) => (x, mty, e1, e2, notes) }
+    }
+
+    object Comment {
+      def apply(parts: Seq[String], meta: Option[CommentMeta], args: Seq[Term]): Term =
+        View.Comment(parts, meta, args).into
+      def unapply(t: Term): Option[(Seq[String], Option[CommentMeta], Seq[Term])] = View
+        .view(t)
+        .collect { case View.Comment(parts, meta, args) => (parts, meta, args) }
     }
 
     def mkConst[T: Primitive](x: T): Term = View.mkConst(x)

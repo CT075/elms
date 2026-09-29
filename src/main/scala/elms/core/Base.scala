@@ -1,6 +1,7 @@
 package elms.core
 
 import elms.core.poly.Lift
+import elms.core.tree.Note
 
 trait Base extends Lift {
   protected type Exp
@@ -28,6 +29,23 @@ trait Base extends Lift {
 
   def unsafeReflect[T](op: Op, children: Rep[Any]*): Rep[T] =
     unsafeWrap(unsafeRegister(op, children.map(unsafeUnwrap)*))
+
+  // Neither of these gives back a `Rep`. An annotation is not a value: nothing
+  // may name one, and reflecting a `unit(())` beside it would put a binding in
+  // the residue that the source never asked for.
+  def unsafeNote(
+      parts: Seq[String],
+      args: Seq[Rep[Any]],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit
+
+  def unsafeContract(
+      parts: Seq[String],
+      args: Seq[Rep[Any]],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit
 
   def unsafeDeclare[T](name: String): Rep[T]
 

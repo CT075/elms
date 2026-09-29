@@ -5,8 +5,9 @@ import scala.collection.mutable
 import foresight.eqsat.{EClassCall, EClassRef}
 
 import elms.core.given
-import elms.core.{Type, Op, Name}
+import elms.core.{Type, Op, Name, CommentMeta}
 import elms.core.tree as ast
+import elms.core.tree.Note
 import elms.pipeline
 import elms.util.{Counter, SourceContext}
 import elms.util.Plumbing.*
@@ -40,16 +41,45 @@ object Builder {
 }
 
 private class RegionBuilder(fresh: () => Name) {
-  val body: mutable.ArrayBuffer[(Name, EClassCall, Stmt)] = mutable.ArrayBuffer()
+  val body: mutable.ArrayBuffer[(Name, EClassCall, Stmt, Seq[PendingNote])] =
+    mutable.ArrayBuffer()
   var tail: Option[EClassCall] = None
+
+  // Notes raised with no statement to live on yet. One buffer per region, which
+  // is what stops a note raised before a loop being adopted by the first
+  // statement inside its body: the body is built before the loop's own node is
+  // reflected, so a shared buffer would hand it over.
+  private val pending: mutable.ArrayBuffer[PendingNote] = mutable.ArrayBuffer()
 
   def clear(): Unit = {
     tail = None
     body.clear()
+    pending.clear()
   }
 
   def push(name: Name, cls: EClassCall, stmt: Stmt): Unit =
-    body += ((name, cls, stmt))
+    body += ((name, cls, stmt, takePending()))
+
+  def raise(note: PendingNote): Boolean = note.side match {
+    case Note.Side.Before => {
+      pending += note
+      true
+    }
+    case Note.Side.After => body.lastOption match {
+        case Some((name, cls, stmt, notes)) => {
+          body(body.length - 1) = (name, cls, stmt, notes :+ note)
+          true
+        }
+        // Nothing has been pushed yet, so there is no statement to sit after.
+        case None => false
+      }
+  }
+
+  def takePending(): Seq[PendingNote] = {
+    val taken = pending.toSeq
+    pending.clear()
+    taken
+  }
 
   def ret(cls: EClassCall): Unit = { tail = Some(cls) }
 
@@ -60,7 +90,9 @@ private class RegionBuilder(fresh: () => Name) {
       )
     }
 
-    body.foldRight(Return(last)) { case ((name, _, stmt), acc) => Let(name, stmt, acc) }
+    body.foldRight(Return(last)) { case ((name, _, stmt, notes), acc) =>
+      Let(name, stmt, acc, notes)
+    }
   }
 }
 
@@ -77,6 +109,10 @@ private class RegionStack(fresh: () => Name) {
   }
 
   def push(name: Name, cls: EClassCall, stmt: Stmt): Unit = top.push(name, cls, stmt)
+
+  def raise(note: PendingNote): Boolean = top.raise(note)
+
+  def takePending(): Seq[PendingNote] = top.takePending()
 
   def ret(cls: EClassCall): Unit = top.ret(cls)
 
@@ -114,6 +150,11 @@ private class FunctionBuilder(
 
   private def invalidateReads(): Unit = reads.clear()
 
+  // The contract of the function being built, raised from anywhere in its body.
+  // Separate from a region's pending buffer, because no statement in the body
+  // may adopt a clause that belongs to the signature.
+  private val contracts: mutable.ArrayBuffer[PendingNote] = mutable.ArrayBuffer()
+
   def register(name: Name): EClassCall = {
     env(name) = graph.addNamedVar(name)
     env(name)
@@ -145,6 +186,8 @@ private class FunctionBuilder(
     def unapply(handle: Builder.Handle): Option[EClassCall] = Some(handle.unwrap)
   }
 
+  def unwrapHandle(handle: Builder.Handle): EClassCall = handle.unwrap
+
   def symbol(name: Name): EClassCall = graph.addNamedVar(name)
 
   def lambda(
@@ -153,12 +196,59 @@ private class FunctionBuilder(
       arg: Name,
       inty: Type,
       outty: Type,
-      body: Builder.Handle
-  ): Unit = regions.push(name, cls, Lambda(arg, inty, outty, body.asStmt))
+      body: Builder.Handle,
+      contract: Seq[PendingNote]
+  ): Unit = regions.push(name, cls, Lambda(arg, inty, outty, body.asStmt, contract))
+
+  // Builds `f` with a contract buffer of its own and hands back what it
+  // collected, so a clause raised inside a lambda belongs to the lambda rather
+  // than escaping onto the function around it.
+  def nested[A](f: => A): (A, Seq[PendingNote]) = {
+    val outer = contracts.toSeq
+    contracts.clear()
+    val result = f
+    val inner = contracts.toSeq
+    contracts.clear()
+    contracts ++= outer
+    (result, inner)
+  }
+
+  def note(
+      parts: Seq[String],
+      args: Seq[EClassCall],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = {
+    val n = PendingNote(parts, args, side, meta)
+    if !regions.raise(n) then degrade(n)
+  }
+
+  def contract(
+      parts: Seq[String],
+      args: Seq[EClassCall],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = { contracts += PendingNote(parts, args, side, meta) }
+
+  // A note with nothing to attach to becomes the free-standing form, which is
+  // what the caller should have written. Losing it silently is the one outcome
+  // that is not acceptable.
+  private def degrade(n: PendingNote): Unit = {
+    val name = fresh()
+    val cls = graph.addNamedVar(name)
+    regions.push(name, cls, Effect(Op.Comment(n.parts, n.meta), n.args))
+  }
+
+  private def flushPending(): Unit = regions.takePending().foreach(degrade)
 
   def reflect(op: Op, children: Seq[Builder.Handle]): Builder.Handle = op match {
     case pure: Op.Pure => reflectPure(pure, children.map(_.unwrap))
     case r: Op.Read    => reflectRead(r, children.map(_.unwrap))
+    // A comment is a `Write` so that it is always emitted and always in order,
+    // but it touches no memory, so it must not clear the read memo. Clearing it
+    // would turn an annotation written between two identical reads into a
+    // second load, and an annotation may not change the program it annotates.
+    case c: Op.Comment => reflectEffect(c, children.map(_.unwrap))
     case w: Op.Write   => {
       invalidateReads()
       reflectEffect(w, children.map(_.unwrap))
@@ -247,20 +337,28 @@ private class FunctionBuilder(
 
   def closeRegion(): (Name, EClassCall, Stmt) = {
     invalidateReads()
+    flushPending()
     val stmt = regions.closeRegion()
     val name = fresh()
     val cls = graph.addNamedVar(name)
     (name, cls, stmt)
   }
 
-  def extract: ast.Term = {
+  def extract: (ast.Term, Seq[ast.Note]) = {
     if !regions.isEmpty then {
       Log.warning("BUG: attempted to `extract` without closing all regions")
     }
 
+    flushPending()
     graph.saturate()
+
+    // The contract resolves against an empty scope, and before the body, so a
+    // clause can only come out as the function's own parameter or an expression
+    // over it. Nothing the body binds is in scope at the signature.
+    val contract = elabNotes(contracts.toSeq, ScopeMap())
+
     val body = elab(regions.extract(), ScopeMap())
-    if config.dropDeadReads then dropUndemanded(body) else body
+    (if config.dropDeadReads then dropUndemanded(body) else body, contract)
   }
 
   // A read's class resolves to the name its statement bound, so any term the
@@ -268,8 +366,8 @@ private class FunctionBuilder(
   private def recordDemand(t: ast.Term): Unit = t match {
     case ast.V(name)        => weakByName.get(name).foreach { _.demanded = true }
     case ast.E(_, children) => children.foreach(recordDemand)
-    case ast.Let(_, e1, e2) => { recordDemand(e1); recordDemand(e2) }
-    case ast.Function(_, _, _, body) => recordDemand(body)
+    case ast.Let(_, e1, e2, _) => { recordDemand(e1); recordDemand(e2) }
+    case ast.Function(_, _, _, body, _) => recordDemand(body)
   }
 
   // Drops the bindings whose weak cell was never set.
@@ -278,15 +376,18 @@ private class FunctionBuilder(
   // anything resolved its class. All that is left is deleting the ones nothing
   // did, which is one walk and no per-binding scan of the body.
   private def dropUndemanded(t: ast.Term): ast.Term = t match {
-    case ast.Let(x, e1, e2) => {
+    // A read can adopt a note, and dropping the read would take the note with
+    // it, so a binding that carries one stays whatever its demand says.
+    case ast.Let(x, e1, e2, notes) => {
       val tail = dropUndemanded(e2)
       val bound = dropUndemanded(e1)
 
-      if weakByName.get(x).exists(!_.demanded) then tail else ast.Let(x, bound, tail)
+      if weakByName.get(x).exists(!_.demanded) && notes.isEmpty then tail
+      else ast.Let(x, bound, tail, notes)
     }
 
-    case ast.Function(arg, inty, outty, body) => ast
-        .Function(arg, inty, outty, dropUndemanded(body))
+    case ast.Function(arg, inty, outty, body, notes) => ast
+        .Function(arg, inty, outty, dropUndemanded(body), notes)
 
     case ast.E(op, children) => ast.E(op, children.map(dropUndemanded))
     case v @ ast.V(_)        => v
@@ -308,10 +409,10 @@ private class FunctionBuilder(
 
   def elab(s: Stmt, cache: ScopeMap): ast.Term = {
     val (prefix, tail) = elabImpl(s, cache)
-    prefix.foldRight(tail) { case ((x, e), acc) => ast.Let(x, e, acc) }
+    prefix.foldRight(tail) { case ((x, e, notes), acc) => ast.Let(x, e, acc, notes) }
   }
 
-  private type ElabOut = (Seq[(Name, ast.Term)], ast.Term)
+  private type ElabOut = (Seq[(Name, ast.Term, Seq[ast.Note])], ast.Term)
 
   def elabCls(cls: EClassCall, cache: ScopeMap): ElabOut = cache.get(cls) match {
     case Some(v) => (Seq(), ast.V(v))
@@ -321,22 +422,49 @@ private class FunctionBuilder(
         .getOrElse { throw LMSRuntimeException(s"BUG: invalid EClassCall $cls") }
       recordDemand(result)
       cache(cls) = name
-      (Seq((name, result)), ast.V(name))
+      (Seq((name, result, Seq())), ast.V(name))
     }
   }
 
+  // What an annotation's argument renders as. An annotation must not change the
+  // program it annotates, so this never materialises a binding: an argument
+  // comes out as the name it already has, or as its own expression if it has
+  // none. Both denote the same value, and only the first would otherwise cost a
+  // statement the source never asked for.
+  private def elabRef(cls: EClassCall, cache: ScopeMap): ast.Term = {
+    val t = cache.get(cls).map(ast.V(_)).getOrElse {
+      graph.extract(cls)
+        .getOrElse { throw LMSRuntimeException(s"BUG: invalid EClassCall $cls") }
+    }
+
+    // The same call `elabCls` makes, and the reason naming a value in an
+    // annotation keeps alive the read that computes it.
+    recordDemand(t)
+    t
+  }
+
+  private def elabNotes(notes: Seq[PendingNote], cache: ScopeMap): Seq[ast.Note] =
+    notes.map { n => ast.Note(n.parts, n.args.map(elabRef(_, cache)), n.side, n.meta) }
+
   def elabImpl(s: Stmt, cache: ScopeMap): ElabOut = s match {
     case Return(cls)    => elabCls(cls, cache)
-    case Let(x, e1, e2) => {
+    case Let(x, e1, e2, notes) => {
       val (prefix1, t1) = elabImpl(e1, cache)
+      val ns = elabNotes(notes, cache)
       val (prefix2, t2) = elabImpl(e2, cache)
-      ((prefix1 :+ (x, t1)) ++ prefix2, t2)
+      ((prefix1 :+ (x, t1, ns)) ++ prefix2, t2)
     }
+    // Ahead of the general effect case, so a comment's children go through
+    // `elabRef` and materialise nothing.
+    case Effect(op @ Op.Comment(_, _), children) =>
+      (Seq(), ast.E(op, children.map(elabRef(_, cache))))
     case Effect(op, children) => {
       children.map(elabCls(_, cache))
-        .foldLeft(Vector.empty[(Name, (ast.Term))], Vector.empty[ast.Term]) {
-          case ((prefixAcc, terms), (prefix, term)) =>
-            (prefixAcc ++ prefix, terms :+ term)
+        .foldLeft(
+          Vector.empty[(Name, ast.Term, Seq[ast.Note])],
+          Vector.empty[ast.Term]
+        ) { case ((prefixAcc, terms), (prefix, term)) =>
+          (prefixAcc ++ prefix, terms :+ term)
         }.mapRight(ast.E(op, _))
     }
     case Read(op, children, _) => elabImpl(Effect(op, children), cache)
@@ -346,8 +474,12 @@ private class FunctionBuilder(
       val e = elab(els, cache.enter)
       (prefix, ast.E(Op.IfThenElse, Seq(c, t, e)))
     }
-    case Lambda(arg, inty, outty, body) =>
-      (Seq(), ast.Function(arg, inty, outty, elab(body, cache.enter)))
+    case Lambda(arg, inty, outty, body, notes) => (
+        Seq(),
+        // Against an empty scope, for the reason a top-level contract is: the
+        // clause sits at the signature, where the body binds nothing yet.
+        ast.Function(arg, inty, outty, elab(body, cache.enter), elabNotes(notes, ScopeMap()))
+      )
     case RangeFor(x, st, end, body) => {
       val (prefix1, stt) = elabCls(st, cache)
       val (prefix2, endt) = elabCls(end, cache)
@@ -399,9 +531,9 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
       current.push(builder)
       val tail = body
       builder.ret(tail)
-      val result = builder.extract
+      val (result, contract) = builder.extract
       current.pop()
-      functions(name) = F(ast.Function(arg, inty, outty, result))
+      functions(name) = F(ast.Function(arg, inty, outty, result, contract))
     }
     functions(name) = Stub
     current.foreach { _.register(name) }
@@ -411,8 +543,10 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
   private def lambda(name: Name, arg: Name, inty: Type, outty: Type): FunctionStub = {
     val builder = ensureBuilder("attempted to define lambda outside function")
     val cls = builder.symbol(name)
-    def fill(body: => Exp): Unit = builder
-      .lambda(name, cls, arg, inty, outty, region(body))
+    def fill(body: => Exp): Unit = {
+      val (r, contract) = builder.nested { region(body) }
+      builder.lambda(name, cls, arg, inty, outty, r, contract)
+    }
 
     FunctionStub(Local(cls), fill)
   }
@@ -422,6 +556,26 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
 
   def reflect(op: Op, children: Seq[Exp]): Exp =
     ensureBuilder("attempted to `reflect` outside function").reflect(op, children)
+
+  def note(
+      parts: Seq[String],
+      args: Seq[Exp],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = {
+    val ctx = ensureBuilder("attempted to raise a note outside function")
+    ctx.note(parts, args.map { h => ctx.unwrapHandle(h) }, side, meta)
+  }
+
+  def contract(
+      parts: Seq[String],
+      args: Seq[Exp],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = {
+    val ctx = ensureBuilder("attempted to raise a contract outside function")
+    ctx.contract(parts, args.map { h => ctx.unwrapHandle(h) }, side, meta)
+  }
 
   def region(f: => Exp): Exp = {
     val ctx = ensureBuilder("attempted to `region` outside function")

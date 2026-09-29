@@ -31,6 +31,44 @@ class CCodegenTests extends SnapshotFunSuite {
     check("pow5", Snippet.code)
   }
 
+  // The guard is what tells the two forms apart. It reflects two bindings of its
+  // own between the annotations, so the free-standing one lands above them and
+  // the attached one below, carried by the `if` it was written against. Over a
+  // snippet with nothing in between, either form would look identical.
+  test("both statement forms in one function") {
+    object Snippet extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val y = x + x
+        comment"@ assert $y >= 0;"
+        attach"@ assert $y != 1;"
+        if (y === 1) then 1 else 0
+      }
+    }
+
+    val code = Snippet.code
+    check("comment", code)
+    assertCommentAgainst(code, "//@ assert x1 >= 0;", "int x3 = 1;")
+    // The declaration and not the `if`: a C `if` that produces a value opens by
+    // declaring the variable it assigns into, so that line is the head of the
+    // statement the note is attached to.
+    assertCommentAgainst(code, "//@ assert x1 != 1;", "int x7;")
+  }
+
+  test("a contract sits above the declaration") {
+    object Snippet extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        contract"@ requires $x > 0;"
+        contract"@ ensures \result > 0;"
+        x + 1
+      }
+    }
+
+    val code = Snippet.code
+    check("contract", code)
+    assertCommentAgainst(code, "//@ requires x0 > 0;", "//@ ensures")
+    assertCommentAgainst(code, "//@ ensures", "int snippet(int x0);")
+  }
+
   test("simple if") {
     object Snippet extends CSnippetDriver[Boolean, Int] {
       def snippet(x: Rep[Boolean]): Rep[Int] = if x then 1 else 0

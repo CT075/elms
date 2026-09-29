@@ -4,7 +4,7 @@ import elms.core.*
 import elms.core.Op.*
 import elms.core.Name
 import elms.core.tree as ast
-import elms.core.tree.View
+import elms.core.tree.{Note, View}
 import elms.core.given
 import elms.util.IndentedWriter
 import elms.util.collection.*
@@ -45,7 +45,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     prog.staticData.foreach { (name, data) => w.emitNamedStaticData(name, data) }
     if prog.staticData.nonEmpty then w.emitln("")
 
-    prog.functions.foreach { (fname, fdef) => w.emitFunctionHeader(fname, fdef) }
+    prog.functions.foreach { (fname, fdef) => w.emitFunctionHeader(topEnv)(fname, fdef) }
 
     prog.functions.foreach { (fname, fdef) => w.emitFunction(topEnv)(fname, fdef) }
   }
@@ -135,12 +135,18 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     // Terms with no good C expression form: a `let` needs a GNU statement-
     // expression, and an `if` needs one as soon as either branch has bindings.
     private def needsStatements: Boolean = View.view(t) match {
-      case Some(View.Let(_, _, _, _))     => true
+      case Some(View.Let(_, _, _, _, _))  => true
       case Some(View.IfThenElse(_, _, _)) => true
       case _                              => false
     }
 
   private type Env = Map[Name, Type]
+
+  // What an interpolated argument looks like in the text. It goes through the
+  // same parenthesisation an operand gets, or `$y * 2` with `y = a + b` comes
+  // out as `a + b * 2`, which is a different predicate.
+  private def operand(env: Env)(t: Term): String =
+    captured { w => w.emitMaybeParenthesizedExpr(env)(t) }
 
   // Where a term's value goes once the statements that compute it have run.
   private enum Sink(val resultTy: Type) {
@@ -176,7 +182,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
     case View.Custom(name, ty, e) => Some(ty)
 
-    case View.Let(x, _ty, e1, e2) => inferType(env)(e1).flatMap { ty1 =>
+    case View.Let(x, _ty, e1, e2, _) => inferType(env)(e1).flatMap { ty1 =>
         inferType(env + (x -> ty1))(e2)
       }
 
@@ -219,9 +225,12 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         case _                   => None
       }
 
-    case View.Function(arg, inty, outty, _) => Some(ARROW(inty, outty))
+    case View.Function(arg, inty, outty, _, _) => Some(ARROW(inty, outty))
 
     case View.Print(_) | View.Println(_) => Some(UNIT)
+    // `UNIT`, the route `Print` already takes, which is what keeps `emitAssign`
+    // from declaring a variable for a comment.
+    case View.Comment(_, _, _)           => Some(UNIT)
 
     case View.StringLength(_)          => Some(INT)
     case View.StringCharAt(_, _)       => Some(CHAR)
@@ -266,8 +275,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
     def fromTerm(term: Term): Seq[Type] = term match {
       case V(_)                           => Seq()
-      case Let(_, e1, e2)                 => fromTerm(e1) ++ fromTerm(e2)
-      case Function(_, inty, outty, body) => inty +: outty +: fromTerm(body)
+      case Let(_, e1, e2, _)                 => fromTerm(e1) ++ fromTerm(e2)
+      case Function(_, inty, outty, body, _) => inty +: outty +: fromTerm(body)
       case E(op, children)                => fromOp(op) ++ children.flatMap(fromTerm)
     }
 
@@ -283,10 +292,10 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     term match {
       case V(_) => Seq()
 
-      case Let(x, e1, e2) => customSignatures(env)(e1) ++
+      case Let(x, e1, e2, _) => customSignatures(env)(e1) ++
           customSignatures(env.setOrRemove(x, inferType(env)(e1)))(e2)
 
-      case Function(arg, inty, _, body) => customSignatures(env + (arg -> inty))(body)
+      case Function(arg, inty, _, body, _) => customSignatures(env + (arg -> inty))(body)
 
       case E(op, children) => {
         val nested = children.flatMap(customSignatures(env))
@@ -323,9 +332,18 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       out.emitln(s"${ty.render} $name($params);")
     }
 
+    private def emitNotes(env: Env)(notes: Seq[Note], side: Note.Side): Unit =
+      renderNotes(notes, side, operand(env)).foreach(out.emitln)
+
     // CR cwong: merge this with `emitFunction`
-    private inline def emitFunctionHeader(fname: Name, fdef: Function): Unit = {
-      val Function(arg, inty, outty, body) = fdef
+    //
+    // The contract goes on the declaration and not the definition. That is what
+    // a caller sees, and ACSL takes one contract per function, so writing it in
+    // both places is a duplicate rather than a repetition.
+    private inline def emitFunctionHeader(topEnv: Env)(fname: Name, fdef: Function)
+        : Unit = {
+      val Function(arg, inty, outty, body, notes) = fdef
+      renderContract(notes, operand(topEnv + (arg -> inty))).foreach(out.emitln)
       val argsS = renderArgs(arg, inty)
       out.emitln(s"${outty.render} ${fname.render(cfg.varPrefix)}($argsS);")
     }
@@ -341,7 +359,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     }
 
     private def emitFunction(topEnv: Env)(fname: Name, fdef: Function): Unit = {
-      val Function(arg, inty, outty, body) = fdef
+      val Function(arg, inty, outty, body, _) = fdef
 
       val env = topEnv + (arg -> inty)
       val argsS = renderArgs(arg, inty)
@@ -543,7 +561,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
           s"C backend only supports ranges directly in foreach loops: $term"
         )
 
-      case View.Let(x, _ty, e1, e2) => out.emitLetExpr(env)(x, e1, e2)
+      case View.Let(x, _ty, e1, e2, notes) => out.emitLetExpr(env)(x, e1, e2, notes)
 
       case View.RangeForEach(_, _, _, _) => out
           .invalidTerm(s"for-loop cannot be emitted as a C expression: $term")
@@ -551,8 +569,11 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case View.While(_, _) => out
           .invalidTerm(s"while-loop cannot be emitted as a C expression: $term")
 
-      case View.Function(_, _, _, _) => out
+      case View.Function(_, _, _, _, _) => out
           .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
+
+      case View.Comment(parts, meta, args) =>
+        renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
 
       case View.Print(t)   => out.emitPrintf(env)(t, "")
       case View.Println(t) => out.emitPrintf(env)(t, "\\n")
@@ -570,10 +591,15 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     // the same term in statement or expr position.
 
     private def emitStmt(env: Env)(term: Term): Unit = out.withView(term) {
-      case View.Let(x, _ty, e1, e2) => {
+      case View.Let(x, _ty, e1, e2, notes) => {
+        out.emitNotes(env)(notes, Note.Side.Before)
         val ty = emitAssign(env)(x, e1)
+        out.emitNotes(env)(notes, Note.Side.After)
         out.emitStmt(env.setOrRemove(x, ty))(e2)
       }
+
+      case View.Comment(parts, meta, args) =>
+        renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
 
       case View.IfThenElse(guard, tthen, telse) => {
         out.emit("if (")
@@ -650,7 +676,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emitln(";")
       }
 
-      case View.Function(_, _, _, _) => {
+      case View.Function(_, _, _, _, _) => {
         out
           .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
         out.emitln(";")
@@ -684,9 +710,16 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
 
     private def emitInto(env: Env, sink: Sink)(term: Term): Unit = out
       .withView(term) {
-        case View.Let(x, _ty, e1, e2) => {
+        case View.Let(x, _ty, e1, e2, notes) => {
+          out.emitNotes(env)(notes, Note.Side.Before)
           val ty = emitAssign(env)(x, e1).getOrElse(UNIT)
+          out.emitNotes(env)(notes, Note.Side.After)
           out.emitInto(env + (x -> ty), sink)(e2)
+        }
+
+        case View.Comment(parts, meta, args) => {
+          renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
+          out.emitFallback(sink)
         }
 
         case View.IfThenElse(guard, tthen, telse) => {
@@ -711,7 +744,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
           out.emitFallback(sink)
         }
 
-        case View.Function(_, _, _, _) => {
+        case View.Function(_, _, _, _, _) => {
           out.invalidTerm(
             s"C backend does not support anonymous functions/lambdas: $term"
           )
@@ -734,19 +767,30 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
       case _                 => out.emitln(s"${sink.store}${zero(sink.resultTy)};")
     }
 
-    private def emitLetExpr(env: Env)(x: Name, e1: Term, e2: Term): Unit = {
+    private def emitLetExpr(
+        env: Env
+    )(x: Name, e1: Term, e2: Term, notes: Seq[Note]): Unit = {
       out.emitln("({")
       out.indented {
+        out.emitNotes(env)(notes, Note.Side.Before)
         val ty = emitAssign(env)(x, e1)
+        out.emitNotes(env)(notes, Note.Side.After)
         out.emitExprResult(env.setOrRemove(x, ty))(e2)
       }
       out.emit("})")
     }
 
     private def emitExprResult(env: Env)(term: Term): Unit = out.withView(term) {
-      case View.Let(x, _ty, e1, e2) => {
+      case View.Let(x, _ty, e1, e2, notes) => {
+        out.emitNotes(env)(notes, Note.Side.Before)
         val ty = emitAssign(env)(x, e1)
+        out.emitNotes(env)(notes, Note.Side.After)
         out.emitExprResult(env.setOrRemove(x, ty))(e2)
+      }
+
+      case View.Comment(parts, meta, args) => {
+        renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
+        out.emitln("/* unit */;")
       }
 
       case View.IfThenElse(guard, tthen, telse) => {
@@ -792,7 +836,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
         out.emitln(";")
       }
 
-      case View.Function(_, _, _, _) => {
+      case View.Function(_, _, _, _, _) => {
         out
           .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
         out.emitln(";")

@@ -65,6 +65,15 @@ object Op {
   case object Print extends Write
   case object Println extends Write
 
+  // A comment standing on its own, as a statement. The children are the values
+  // the text mentions, interleaved between `parts` the way a `StringContext`
+  // interleaves them.
+  //
+  // `Write` and not `Read`: a comment is always emitted, always in order, never
+  // deduped against another and never dropped for want of a use.
+  case class Comment(val parts: Seq[String], val meta: Option[CommentMeta] = None)
+      extends Write
+
   case object StringLength extends Pure
   case object StringTake extends Pure
   case object StringDrop extends Pure

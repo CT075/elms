@@ -4,6 +4,7 @@ import scala.collection.mutable
 
 import elms.core.{Op, Name}
 import elms.core.tree as ast
+import elms.core.tree.Note
 import elms.pipeline
 import elms.util.ClosureCompare
 
@@ -55,6 +56,20 @@ abstract class Driver extends Base with ClosureCompare {
   override def unsafeUnwrap[T](rep: Rep[T]): Exp = rep.wrapped
   override def unsafeRegister(op: Op, children: Exp*): Exp = builder
     .reflect(op, children.toVector)
+
+  override def unsafeNote(
+      parts: Seq[String],
+      args: Seq[Rep[Any]],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = builder.note(parts, args.map(unsafeUnwrap), side, meta)
+
+  override def unsafeContract(
+      parts: Seq[String],
+      args: Seq[Rep[Any]],
+      side: Note.Side,
+      meta: Option[CommentMeta]
+  ): Unit = builder.contract(parts, args.map(unsafeUnwrap), side, meta)
 
   override def unsafeDeclare[T](name: String): Rep[T] = variable(builder.name(name))
 
