@@ -59,6 +59,7 @@ object ConstantAnalysis extends Analysis[ElmsNode, Option[Op.Const[?]]] {
       case (Op.Gt, Seq(x: Char, y: Char))    => Some(Op.Const(x > y))
       case (Op.Le, Seq(x: Char, y: Char))    => Some(Op.Const(x <= y))
       case (Op.Ge, Seq(x: Char, y: Char))    => Some(Op.Const(x >= y))
+      case (Op.CharToInt, Seq(c: Char))      => Some(Op.Const(c.toInt))
       case (Op.Not, Seq(b: Boolean))         => Some(Op.Const(!b))
 
       case (Op.StrictAnd, Seq(x: Boolean, y: Boolean)) => Some(Op.Const(x & y))

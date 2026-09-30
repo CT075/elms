@@ -90,6 +90,7 @@ trait Interp
     def <=(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v <= rhs.v)
     @targetName("charGe")
     def >=(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v >= rhs.v)
+    def toInt: Rep[Int] = Rep(lhs.v.toInt)
 
   // RangeOps
   extension (st: Rep[Int]) def until(end: Rep[Int]): Rep[Range] = Rep(st.v.until(end.v))

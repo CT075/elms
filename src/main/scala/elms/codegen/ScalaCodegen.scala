@@ -271,6 +271,10 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
         out.emitTerm(t)
         out.emit(")")
       }
+      case View.CharToInt(t) => {
+        out.emitMaybeParenthesized(t)
+        out.emit(".toInt")
+      }
       case View.StringLength(s) => {
         out.emitMaybeParenthesized(s)
         out.emit(".length")

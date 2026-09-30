@@ -73,6 +73,7 @@ object Propagate {
         case Ext.Gt(Ext.Const[Char](x), Ext.Const[Char](y)) => Ext.mkConst(x > y)
         case Ext.Le(Ext.Const[Char](x), Ext.Const[Char](y)) => Ext.mkConst(x <= y)
         case Ext.Ge(Ext.Const[Char](x), Ext.Const[Char](y)) => Ext.mkConst(x >= y)
+        case Ext.CharToInt(Ext.Const[Char](c))                     => Ext.mkConst(c.toInt)
         case Ext.And(Ext.Const[Boolean](x), Ext.Const[Boolean](y)) => Ext
             .mkConst(x && y)
         case Ext.And(Ext.Const[Boolean](false), t) => Ext.mkConst(false)

@@ -14,6 +14,14 @@ trait DigitClass extends DslOps {
   def isDigit(c: Rep[Char]): Rep[Boolean] = unit('0') <= c && c <= unit('9')
 }
 
+// The other half of reading a decimal digit. Without `toInt` the value needs a
+// ten-way dispatch even once the guard is two comparisons, which is where the
+// goals were actually going.
+@virtualize
+trait DigitValue extends DslOps {
+  def digitValue(c: Rep[Char]): Rep[Int] = c.toInt - unit('0').toInt
+}
+
 @virtualize
 class CharOrderingTests extends SnapshotFunSuite {
   val under = "cchar/"
@@ -72,6 +80,37 @@ class CharOrderingTests extends SnapshotFunSuite {
     assert(Snippet.code.contains("!"))
   }
 
+  test("a digit value is one subtraction") {
+    object Snippet extends CDriver[Char, Int] with DigitValue {
+      def snippet(c: Rep[Char]): Rep[Int] = digitValue(c)
+    }
+    val code = Snippet.code
+    check("digit-value", code)
+    assert(code.contains("(int)(unsigned char)"))
+    assert(!code.contains("if"))
+  }
+
+  // The e-graph hash-conses `Op.Const`, and Scala's cooperative equality makes
+  // `'A' == 65`. A case class compares only its first parameter list, so without
+  // the hand-written `equals` these are one node, the two e-classes merge, and
+  // extraction is free to hand back the `char`.
+  test("a char constant and its code point are different constants") {
+    import elms.core.Op
+    import elms.core.instances.given
+    assert(Op.Const('A') != Op.Const(65))
+    assert(Op.Const('A') == Op.Const('A'))
+    assert(Op.Const(65) == Op.Const(65))
+  }
+
+  test("a widened char constant folds") {
+    object Snippet extends DslDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = unit('A').toInt
+    }
+    val code = Snippet.code
+    assert(code.contains("65"), code)
+    assert(!code.contains("toInt"), code)
+  }
+
   test("two char constants fold") {
     object Snippet extends DslDriver[Int, Boolean] {
       def snippet(x: Rep[Int]): Rep[Boolean] = unit('0') <= unit('9') &&
@@ -80,6 +119,19 @@ class CharOrderingTests extends SnapshotFunSuite {
     val code = Snippet.code
     assert(!code.contains("<"), code)
     assert(code.contains("false"), code)
+  }
+
+  test("the emitted Scala agrees with Char's own toInt") {
+    object Snippet
+        extends DslDriver[Char, Int] with DigitValue with EvalScalaSnippet[Char, Int] {
+      val prefix = "char-value-test"
+      val name = "charvalues"
+      def snippet(c: Rep[Char]): Rep[Int] = digitValue(c)
+    }
+
+    CharOrderingTests.inputs.foreach { c =>
+      assertResult(c.toInt - '0'.toInt, s"on $c") { Snippet.eval(c) }
+    }
   }
 
   test("the emitted Scala agrees with Char's own operators") {
@@ -133,6 +185,36 @@ class CharRuntimeTests extends org.scalatest.funsuite.AnyFunSuite {
       case Some(out) =>
         assert(out.linesIterator.toVector == cs.map(expected).map(_.toString).toVector)
     }
+  }
+
+  private def agreesInt(code: String, cs: Seq[Char], expected: Char => Int): Unit = {
+    val calls = cs.map { c => s"""  printf("%d\\n", snippet((char)${c.toInt}));""" }
+      .mkString("\n")
+    val main = s"""#include <stdio.h>
+         |int snippet(char x0);
+         |int main(void) {
+         |$calls
+         |  return 0;
+         |}
+         |""".stripMargin
+
+    CRunner.run(code, main) match {
+      case None      => cancel("no C compiler on this machine")
+      case Some(out) =>
+        assert(out.linesIterator.toVector == cs.map(expected).map(_.toString).toVector)
+    }
+  }
+
+  // `\u00e9` is 233 and a signed `char` holds it as -23, so an uncast `(int)c`
+  // is off by 256 here and nowhere else in the set.
+  test("a digit value agrees with Scala's on a high-bit character") {
+    object Snippet extends CDriver[Char, Int] with DigitValue {
+      def snippet(c: Rep[Char]): Rep[Int] = digitValue(c)
+    }
+    val cs = CharOrderingTests.inputs
+    assert(cs.map(c => c.toInt - '0'.toInt).distinct.length == cs.length)
+    assert(cs.exists(_.toInt > 127))
+    agreesInt(Snippet.code, cs, c => c.toInt - '0'.toInt)
   }
 
   test("a digit class agrees with Scala's") {

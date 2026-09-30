@@ -464,6 +464,7 @@ class CCodegen(
     // from declaring a variable for a comment.
     case View.Comment(_, _, _)           => Some(UNIT)
 
+    case View.CharToInt(_)             => Some(INT)
     case View.StringLength(_)          => Some(INT)
     case View.StringCharAt(_, _)       => Some(CHAR)
     case View.StringDrop(_, _)         => Some(STRING)
@@ -771,6 +772,14 @@ class CCodegen(
       case View.Shr(x, y)    => out.emitBinop(env)(">>", x, y)
       case View.BitNot(t)    => {
         out.emit("~")
+        out.emitMaybeParenthesizedExpr(env)(t)
+      }
+
+      // `(int)c` on its own reads a negative number out of a `char` the target
+      // chose to make signed, where Scala's `Char.toInt` is unsigned whatever
+      // the target does. Same cast the orderings take, for the same reason.
+      case View.CharToInt(t) => {
+        out.emit("(int)(unsigned char)")
         out.emitMaybeParenthesizedExpr(env)(t)
       }
 

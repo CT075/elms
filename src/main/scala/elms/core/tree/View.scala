@@ -242,6 +242,10 @@ object View {
     def into: Term = E(Op.Println, Seq(t))
   }
 
+  final case class CharToInt(t: Term) extends View {
+    def into: Term = E(Op.CharToInt, Seq(t))
+  }
+
   final case class StringLength(t: Term) extends View {
     def into: Term = E(Op.StringLength, Seq(t))
   }
@@ -370,6 +374,7 @@ object View {
     case E(Op.Print, s)   => arity1("Print", s).map(Print(_))
     case E(Op.Println, s) => arity1("Println", s).map(Println(_))
 
+    case E(Op.CharToInt, s)        => arity1("CharToInt", s).map(CharToInt(_))
     case E(Op.StringLength, s)     => arity1("StringLength", s).map(StringLength(_))
     case E(Op.StringTake, s)       => arity2("StringTake", s).map(StringTake(_, _))
     case E(Op.StringDrop, s)       => arity2("StringDrop", s).map(StringDrop(_, _))
@@ -659,6 +664,12 @@ object View {
       def apply(t: Term): Term = View.Println(t).into
       def unapply(t: Term): Option[Term] = View.view(t)
         .collect { case View.Println(e) => e }
+    }
+
+    object CharToInt {
+      def apply(t: Term): Term = View.CharToInt(t).into
+      def unapply(t: Term): Option[Term] = View.view(t)
+        .collect { case View.CharToInt(e) => e }
     }
 
     object StringLength {

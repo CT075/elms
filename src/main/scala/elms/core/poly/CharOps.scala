@@ -14,4 +14,5 @@ trait CharOps extends HasRep {
     def <=(rhs: Rep[Char]): Rep[Boolean]
     @targetName("charGe")
     def >=(rhs: Rep[Char]): Rep[Boolean]
+    def toInt: Rep[Int]
 }

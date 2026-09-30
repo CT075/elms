@@ -19,4 +19,5 @@ trait CharOps extends Base with poly.CharOps {
     def <=(rhs: Rep[Char]): Rep[Boolean] = unsafeReflect(Le, lhs, rhs)
     @targetName("charGe")
     def >=(rhs: Rep[Char]): Rep[Boolean] = unsafeReflect(Ge, lhs, rhs)
+    def toInt: Rep[Int] = unsafeReflect(CharToInt, lhs)
 }

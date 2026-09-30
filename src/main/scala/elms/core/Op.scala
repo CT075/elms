@@ -21,7 +21,22 @@ object Op {
 
   sealed abstract class Control extends Op
 
-  case class Const[T](val v: T)(using val prim: Primitive[T]) extends Pure
+  // The `equals` is not the one a case class would derive, and it has to be
+  // written out. Scala's cooperative equality makes `'A' == 65` true, and a
+  // case class only compares its first parameter list, so `Const('A')` and
+  // `Const(65)` are one value to anything that hashes them. The e-graph does:
+  // the two e-classes merge, extraction picks whichever node it likes, and a
+  // `char` literal lands where the program wanted an `int`.
+  case class Const[T](val v: T)(using val prim: Primitive[T]) extends Pure {
+    override def equals(other: Any): Boolean = other match {
+      // `Objects.equals` and not `==`, because cooperative equality is the
+      // thing being avoided and `==` is how it gets in.
+      case that: Const[?] => prim == that.prim && java.util.Objects.equals(v, that.v)
+      case _              => false
+    }
+
+    override def hashCode: Int = (prim, v).##
+  }
 
   case class VarNew(val typ: Type) extends Write
   case object VarGet extends Read
@@ -73,6 +88,11 @@ object Op {
   // deduped against another and never dropped for want of a use.
   case class Comment(val parts: Seq[String], val meta: Option[CommentMeta] = None)
       extends Write
+
+  // Scala's `Char.toInt`. No narrowing counterpart, because what wants this is
+  // arithmetic on a character that came out of `charAt` and there is nothing
+  // yet that wants to put one back.
+  case object CharToInt extends Pure
 
   case object StringLength extends Pure
   case object StringTake extends Pure
