@@ -2,6 +2,7 @@ package elms.core
 
 import elms.core.poly.Lift
 import elms.core.tree.Note
+import elms.util.SourceContext
 
 trait Base extends Lift {
   protected type Exp
@@ -9,7 +10,11 @@ trait Base extends Lift {
   def fun[A: Typable, B: Typable](name: Option[Name])(
       f: Rep[A] => Rep[B]
   ): Rep[A => B]
-  def lam[A: Typable, B: Typable](f: Rep[A] => Rep[B]): Rep[A => B]
+  // The location is for the backends with no representation for a lambda: the
+  // message they raise is only actionable if it names the line that wrote one.
+  def lam[A: Typable, B: Typable](f: Rep[A] => Rep[B])(using
+      SourceContext
+  ): Rep[A => B]
 
   def fun[A: Typable, B: Typable](f: Rep[A] => Rep[B]): Rep[A => B] = fun(None)(f)
   def fun[A: Typable, B: Typable](name: Name)(f: Rep[A] => Rep[B]): Rep[A => B] =

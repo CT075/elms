@@ -16,6 +16,11 @@ abstract class Backend(cfg: Config) {
 
   protected def renderType(ty: Type): String
 
+  // Whether a first-class function value has a representation in this target. C
+  // has no closures, so `lam` is rejected where it is called rather than
+  // emitted as something that cannot compile.
+  def supportsLambdas: Boolean = true
+
   protected def makeIndentedWriter(out: java.io.PrintStream): IndentedWriter =
     IndentedWriter(out, cfg.baseIndentLevel, cfg.indentKind)
 

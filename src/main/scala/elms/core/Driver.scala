@@ -6,7 +6,7 @@ import elms.core.{Op, Name}
 import elms.core.tree as ast
 import elms.core.tree.Note
 import elms.pipeline
-import elms.util.ClosureCompare
+import elms.util.{ClosureCompare, SourceContext}
 
 abstract class Driver extends Base with ClosureCompare {
   protected val builder: pipeline.Builder
@@ -43,8 +43,9 @@ abstract class Driver extends Base with ClosureCompare {
   override def fun[A: Typable, B: Typable](name: Option[Name])(
       f: Rep[A] => Rep[B]
   ): Rep[A => B] = makeFun[A, B](name.getOrElse { builder.fresh() }, true, f)
-  override def lam[A: Typable, B: Typable](f: Rep[A] => Rep[B]): Rep[A => B] =
-    makeFun[A, B](builder.fresh(), false, f)
+  override def lam[A: Typable, B: Typable](f: Rep[A] => Rep[B])(using
+      SourceContext
+  ): Rep[A => B] = makeFun[A, B](builder.fresh(), false, f)
 
   override def region[A](exp: => Rep[A]): Rep[A] =
     unsafeWrap(builder.region { unsafeUnwrap(exp) })

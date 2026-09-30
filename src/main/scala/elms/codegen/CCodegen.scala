@@ -10,7 +10,7 @@ import elms.util.IndentedWriter
 import elms.util.collection.*
 import elms.util.Plumbing.{mapRight, traverse}
 import elms.pipeline.InlineRanges
-import elms.runtime.Log
+import elms.runtime.{Log, LMSRuntimeException}
 
 object CCodegen {
   // What the emitted C is allowed to rely on.
@@ -31,6 +31,11 @@ class CCodegen(
     opts: CCodegen.Options = CCodegen.Options()
 ) extends Backend(cfg) {
   import ast._
+
+  // C has no closures, and the three backstop sites below cannot produce
+  // anything that compiles. `SnippetDriver` reads this and refuses a `lam`
+  // where it was written, which is the only place the line number still exists.
+  override def supportsLambdas: Boolean = false
 
   // The body decides the includes, so it is emitted into a buffer first and the
   // includes are written in front of whatever it turned out to ask for.
@@ -183,6 +188,17 @@ class CCodegen(
       case STRUCT(repr) => s"struct ${repr.name} *"
 
       case RANGE => elmsRange("elms_range")
+
+      // Its own case rather than the generic branch, which would say
+      // `Unsupported type ARROW(INT,INT)` and leave the reader to work out
+      // that a name is the fix.
+      case ARROW(_, _) => {
+        val msg = "no C type for a function value; C has no closures, so give" +
+          " the function a name with `fun` and call it directly"
+        Log.error(msg)
+        s"/* ERROR: $msg */"
+      }
+
       case _ => {
         Log.error(s"Attempted to render unsupported type $ty")
         s"/* Unsupported type $ty */ ???"
@@ -358,6 +374,12 @@ class CCodegen(
       }
     }
   }
+
+  private def loopInExpr(what: String, term: Term): LMSRuntimeException =
+    LMSRuntimeException(
+      s"BUG: a `$what` reached a value position; a loop is UNIT-typed and ANF" +
+        s" binds it to a name before any use: $term"
+    )
 
   // What to hand back for `ty` when there is nothing real to hand back.
   private def zero(ty: Type): String = ty match {
@@ -557,8 +579,28 @@ class CCodegen(
       out.emitln(s"${outty.render} ${fname.render(cfg.varPrefix)}($argsS);")
     }
 
+    // No source-level cause at all, now that `Op.ArrayInit` is gone. What is
+    // left is arity: `View.view`'s helpers answer `None` for a term with the
+    // wrong number of children, having already logged which op and how.
     private inline def withView(t: Term)(k: View => Unit): Unit = View.view(t)
-      .fold { out.invalidTerm(s"Got invalid expression term: $t") }(k)
+      .fold { out.invalidTerm(s"BUG: no `View` for a term the backend reached: $t") }(k)
+
+    // A `lam` that got past `SnippetDriver`, which means a `Driver` built
+    // against this backend directly. The line that wrote it is long gone by
+    // here, so this is a backstop and says so rather than pretending to be the
+    // diagnostic.
+    private def lambdaBackstop(): Unit = out.unsupported(
+      "`lam` has no C representation",
+      "C has no closures, and this is the backstop for a driver that did not" +
+        " go through `SnippetDriver`, which reports at the call with a location",
+      "give the function a name with `fun` so it becomes a top-level function"
+    )
+
+    // The three things a reader needs: which construct, why C has no form for
+    // it, and what to write instead. A message missing the third is a dead end,
+    // and six hand-written strings drift.
+    private def unsupported(construct: String, why: String, instead: String): Unit =
+      out.invalidTerm(s"$construct: $why; $instead")
 
     private def invalidTerm(msg: String): Unit = {
       Log.error(msg)
@@ -660,7 +702,15 @@ class CCodegen(
         }
 
         case None => {
-          out.invalidTerm(s"Could not infer C type for let-bound term: $e")
+          // Ranges used to reach this, and now have a type. What is left is a
+          // malformed term, which `View.view` has already logged about, or an
+          // `ARROW` from a lambda. Both are bugs rather than programs someone
+          // wrote, and neither throws: the malformed term came from outside the
+          // backend.
+          out.invalidTerm(
+            "BUG: no C type inferred for a let-bound term, so it is either" +
+              s" malformed or a function value: $e"
+          )
           out.emitln(";")
         }
       }
@@ -757,11 +807,16 @@ class CCodegen(
         out.emit("})")
       }
 
-      // An array of fixed-length arrays needs `int (*)[16]` and a `sizeof` to
-      // match, and `renderType` has no declarator to build either from.
       case View.ArrayNew(ty, t) => ty match {
-        case ARRAY(_, Some(_)) => out
-            .invalidTerm(s"C backend cannot allocate fixed-length arrays: $ty")
+        // Reads like a policy and is really a gap. `renderDeclarator` knows how
+        // to wrap a name in `int xs[16]`, and an allocation has no name to wrap
+        // yet, so nothing here can build `int (*)[16]` or the `sizeof` to match.
+        case ARRAY(_, Some(_)) => out.unsupported(
+            s"cannot allocate an array whose elements are $ty",
+            "that needs the declarator form `int (*)[16]`, which `renderType`" +
+              " has no name to wrap and so cannot build",
+            "allocate an array of pointers, or add the declarator path"
+          )
 
         // A fat array allocates through its own constructor, which is where
         // the length it carries gets set. `elms_lib.h` pulls in `stdlib.h`
@@ -844,14 +899,16 @@ class CCodegen(
 
       case View.Let(x, _ty, e1, e2, notes) => out.emitLetExpr(env)(x, e1, e2, notes)
 
-      case View.RangeForEach(_, _, _, _) => out
-          .invalidTerm(s"for-loop cannot be emitted as a C expression: $term")
+      // Unreachable, and a comment in the residue for an unreachable case
+      // means the file still compiles and the bug ships. A loop is `UNIT` per
+      // `inferType`, `emitAssign` routes a `Some(UNIT)` binding to `emitStmt`,
+      // and ANF binds a loop to a name before anything can use it, so an
+      // operand position only ever sees the `V`. Getting here means `inferType`
+      // stopped saying `UNIT` or the IR stopped being in ANF.
+      case View.RangeForEach(_, _, _, _) => throw loopInExpr("RangeForEach", term)
+      case View.While(_, _)              => throw loopInExpr("While", term)
 
-      case View.While(_, _) => out
-          .invalidTerm(s"while-loop cannot be emitted as a C expression: $term")
-
-      case View.Function(_, _, _, _, _) => out
-          .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
+      case View.Function(_, _, _, _, _) => out.lambdaBackstop()
 
       case View.Comment(parts, meta, args) =>
         renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
@@ -966,7 +1023,11 @@ class CCodegen(
       // the right length due to `structSet` taking `Rep[Any]`.
       case View.StructSet(x, field, v) => memberType(env)(x, field) match {
         case Some(ARRAY(_, Some(_))) => {
-          out.invalidTerm(s"Cannot assign to fixed-length array member `$field`")
+          out.unsupported(
+            s"cannot assign to the fixed-length member `$field` as a whole",
+            "C has no assignment operator for an array",
+            "write through it with `.set(i, x)`"
+          )
           out.emitln(";")
         }
 
@@ -984,8 +1045,7 @@ class CCodegen(
       }
 
       case View.Function(_, _, _, _, _) => {
-        out
-          .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
+        out.lambdaBackstop()
         out.emitln(";")
       }
 
@@ -1019,9 +1079,15 @@ class CCodegen(
       .withView(term) {
         case View.Let(x, _ty, e1, e2, notes) => {
           out.emitNotes(env)(notes, Note.Side.Before)
-          val ty = emitAssign(env)(x, e1).getOrElse(UNIT)
+          // `setOrRemove` and not `getOrElse(UNIT)`: defaulting a failed
+          // inference to `UNIT` put the name in the env as a unit, so every
+          // later use emitted `/* unit */` and an `int` function ended with
+          // `return /* unit */;` a long way from the reported error. Dropping
+          // the name emits the name, which is at least an undeclared
+          // identifier on the right line.
+          val ty = emitAssign(env)(x, e1)
           out.emitNotes(env)(notes, Note.Side.After)
-          out.emitInto(env + (x -> ty), sink)(e2)
+          out.emitInto(env.setOrRemove(x, ty), sink)(e2)
         }
 
         case View.Comment(parts, meta, args) => {
@@ -1039,22 +1105,12 @@ class CCodegen(
           out.emitln("}")
         }
 
-        case View.RangeForEach(_, _, _, _) => {
-          out.invalidTerm(s"Cannot use the result of a for-loop in C: $term")
-          out.emitln(";")
-          out.emitFallback(sink)
-        }
-
-        case View.While(_, _) => {
-          out.invalidTerm(s"Cannot use the result of a while-loop in C: $term")
-          out.emitln(";")
-          out.emitFallback(sink)
-        }
+        // Unreachable for the same reason as the expression-position pair.
+        case View.RangeForEach(_, _, _, _) => throw loopInExpr("RangeForEach", term)
+        case View.While(_, _)              => throw loopInExpr("While", term)
 
         case View.Function(_, _, _, _, _) => {
-          out.invalidTerm(
-            s"C backend does not support anonymous functions/lambdas: $term"
-          )
+          out.lambdaBackstop()
           out.emitln(";")
           out.emitFallback(sink)
         }
@@ -1158,6 +1214,7 @@ class CCodegen(
     }
 
     // Unit arguments are dropped, to match the parameter list `renderArgs` built.
+    // Nothing is lost by dropping them: see `emitPrintf`'s `UNIT` case.
     // `printf` needs the conversion that matches its argument, and `%s` was only
     // ever right for strings.
     private def emitPrintf(env: Env)(t: Term, terminator: String): Unit = {
@@ -1181,14 +1238,32 @@ class CCodegen(
             out.emit(" ? \"true\" : \"false\"")
           }
 
+        // The argument is dropped and nothing is lost with it. ANF binds a
+        // unit-producing term to a name before the print, so whatever computed
+        // it already ran as a statement and what got dropped is a `V` that
+        // computes nothing.
         case Some(UNIT) => out.emit(s"""printf("()$terminator")""")
 
-        case ty => out
-            .invalidTerm(s"C backend cannot print a value of type $ty: $t")
+        // No right answer rather than a missing one. Scala's `println` on an
+        // array prints an identity hash, `%p` prints an address, and `[1, 2, 3]`
+        // is what the reader wanted and matches neither. Guessing makes the two
+        // backends disagree about what a program prints, which is the one thing
+        // their being comparable is for.
+        case Some(ty) => out.unsupported(
+            s"cannot print a value of type $ty",
+            "C has no `printf` conversion for it, and every candidate" +
+              " disagrees with what the Scala backend prints",
+            "print the elements one at a time"
+          )
+
+        case None => out
+            .invalidTerm(s"BUG: no type inferred for the argument of a print: $t")
       }
     }
 
     private def emitArgTerms(env: Env)(args: Seq[Term]): Unit = {
+      // Dropped for the reason `emitPrintf` gives: ANF already ran whatever
+      // produced the unit, so the argument left here computes nothing.
       val passed = args.filterNot { t => inferType(env)(t).exists(_ == UNIT) }
 
       out.emit("(")
