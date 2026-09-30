@@ -8,7 +8,8 @@ import elms.core.tree.{Note, View}
 import elms.core.given
 import elms.util.IndentedWriter
 import elms.util.collection.*
-import elms.util.Plumbing.traverse
+import elms.util.Plumbing.{mapRight, traverse}
+import elms.pipeline.InlineRanges
 import elms.runtime.Log
 
 object CCodegen {
@@ -52,15 +53,27 @@ class CCodegen(
   }
 
   private def emitBody(prog: Program, w: IndentedWriter): Unit = {
+    // Every loop reaches here with a range value in it that C has no type for,
+    // so they come out before anything looks at the program. Before `structsIn`
+    // and `customSignatures` so that both see the lowered form.
+    //
+    // `ScalaCodegen` does not do this. `x until y`, `.start` and `.end` all
+    // emit correctly there, and running the pass would churn its snapshots to
+    // tidy output that was already right.
+    val lowered = Program(
+      prog.functions.map(_.mapRight(_.map(InlineRanges.run))),
+      prog.staticData
+    )
+
     // Static data is named in the program the same way a function is, so it
     // belongs in the same env: `inferType` has no other way to reach its type.
-    val topEnv: Env = prog.functions.map { (fname, fdef) =>
+    val topEnv: Env = lowered.functions.map { (fname, fdef) =>
       fname -> functionType(fdef)
-    }.toMap ++ prog.staticData.map { (name, data) => name -> data.ty }
+    }.toMap ++ lowered.staticData.map { (name, data) => name -> data.ty }
 
-    structsIn(prog).foreach { repr => w.emitStructDecl(repr) }
+    structsIn(lowered).foreach { repr => w.emitStructDecl(repr) }
 
-    val customs = prog.functions.flatMap { (_, fdef) =>
+    val customs = lowered.functions.flatMap { (_, fdef) =>
       customSignatures(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
     }.distinct
 
@@ -72,12 +85,13 @@ class CCodegen(
     customs.foreach { (name, ty, argTys) => w.emitCustomHeader(name, ty, argTys) }
     if customs.nonEmpty then w.emitln("")
 
-    prog.staticData.foreach { (name, data) => w.emitNamedStaticData(name, data) }
-    if prog.staticData.nonEmpty then w.emitln("")
+    lowered.staticData.foreach { (name, data) => w.emitNamedStaticData(name, data) }
+    if lowered.staticData.nonEmpty then w.emitln("")
 
-    prog.functions.foreach { (fname, fdef) => w.emitFunctionHeader(topEnv)(fname, fdef) }
+    lowered.functions
+      .foreach { (fname, fdef) => w.emitFunctionHeader(topEnv)(fname, fdef) }
 
-    prog.functions.foreach { (fname, fdef) => w.emitFunction(topEnv)(fname, fdef) }
+    lowered.functions.foreach { (fname, fdef) => w.emitFunction(topEnv)(fname, fdef) }
   }
 
   // A unit parameter is spelled as C's empty parameter list. `void` cannot name

@@ -333,6 +333,53 @@ class CCodegenTests extends SnapshotFunSuite {
     assert(snippet.code.contains("ERROR") && snippet.code.contains("ArrayInit"))
   }
 
+  // The motivating case. `foreach` reads its bounds back off the range it was
+  // called on, so before `InlineRanges` this emitted three errors and no usable
+  // loop. The `ERROR` assertion is the point of the test: a snapshot on its own
+  // would happily pin the broken output.
+  test("a foreach becomes a for loop") {
+    object Snippet extends CSnippetDriver[Int, Unit] {
+      def snippet(x: Rep[Int]): Rep[Unit] = {
+        val arr = newArray[Int](x)
+        for (i <- (0.until(x)): Rep[Range]) { arr.set(i, i * 2) }
+      }
+    }
+    val code = Snippet.code
+    check("range-foreach", code)
+    assert(!code.contains("ERROR"))
+  }
+
+  test("a foreach over constant bounds") {
+    object Snippet extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val acc = newVar(unit(0))
+        for (i <- (0.until(unit(10))): Rep[Range]) { acc := acc.get + i }
+        acc.get
+      }
+    }
+    val code = Snippet.code
+    check("range-foreach-const", code)
+    assert(!code.contains("ERROR"))
+  }
+
+  // Two ranges are in scope at once inside the inner loop, and the inner one is
+  // built from the outer loop variable. A pass that confused them would emit a
+  // loop over the wrong bounds and still produce C that compiles.
+  test("nested foreach loops keep their own bounds") {
+    object Snippet extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val acc = newVar(unit(0))
+        for (i <- (0.until(x)): Rep[Range]) {
+          for (j <- (0.until(i)): Rep[Range]) { acc := acc.get + j }
+        }
+        acc.get
+      }
+    }
+    val code = Snippet.code
+    check("range-nested", code)
+    assert(!code.contains("ERROR"))
+  }
+
   // The flag suppresses the include lines and changes nothing else. Asserting
   // that by diff is what stops it from quietly disabling the feature the
   // includes were there for.
