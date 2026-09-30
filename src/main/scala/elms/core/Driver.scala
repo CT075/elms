@@ -6,6 +6,7 @@ import elms.core.{Op, Name}
 import elms.core.tree as ast
 import elms.core.tree.Note
 import elms.pipeline
+import elms.runtime.LMSStagingException
 import elms.util.{ClosureCompare, SourceContext}
 
 abstract class Driver extends Base with ClosureCompare {
@@ -16,6 +17,16 @@ abstract class Driver extends Base with ClosureCompare {
   def variable[A](name: Name): Rep[A] = unsafeWrap(builder.variable(name))
 
   val funTable: mutable.Map[String, Exp] = mutable.Map()
+
+  // Which closure took each name. Two closures asking for one name is the
+  // error: both functions are emitted under it, and what comes out is one
+  // definition, a call that resolves to neither, and a backend reporting that
+  // it cannot infer a type.
+  //
+  // Keyed on every name and not only the ones a caller wrote, because a name
+  // from `builder.fresh()` is new by construction and so can never be the one
+  // that collides. That saves threading a flag down from `fun`.
+  private val claimedNames: mutable.Map[Name, String] = mutable.Map()
 
   // Every arity is the same three steps: key the closure, register a stub so a
   // recursive call finds one, then fill it. Only the shape of the callback
@@ -33,6 +44,18 @@ abstract class Driver extends Base with ClosureCompare {
       body: Seq[Exp] => Exp
   ): Rep[F] = {
     val key = canonicalize(closure)
+
+    claimedNames.get(name) match {
+      case Some(taken) if taken != key =>
+        throw LMSStagingException(
+          s"two different functions were staged under the name " +
+            s"`${name.render("")}`. A name given to `fun` has to be unique " +
+            "across the program: rename one of them, or share a single `val` " +
+            "if they were meant to be the same function."
+        )
+      case _ => claimedNames(name) = key
+    }
+
     funTable.get(key) match {
       case Some(symb) => unsafeWrap(symb)
       case None       => {

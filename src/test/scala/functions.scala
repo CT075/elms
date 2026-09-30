@@ -5,6 +5,7 @@ import scala.language.implicitConversions
 import elms.prelude._
 import elms.prelude.given
 import elms.helpers.DslOps
+import elms.runtime.LMSStagingException
 
 // Tests to ensure that implicit resolution is set up correctly.
 // These should all typecheck and compile.
@@ -140,6 +141,67 @@ class NestedFunTests extends org.scalatest.funsuite.AnyFunSuite {
     // Its own inputs: `fact` counts down to zero, so a negative one never
     // terminates, and the shared set holds a 100 that would overflow.
     check(Snippet.eval, n => (1 to n).product, "factorial", Seq(0, 2, 5, 10))
+  }
+
+  // Two `fun` calls under one name used to reach codegen as two functions both
+  // claiming it, which came out as one definition, a call resolving to neither
+  // and a `BUG: no C type inferred` where the other call should have been. The
+  // memo does not save it: two eta-expansions of `twice` are two lambda classes
+  // and two keys, so nothing upstream notices they are the same method.
+  test("two functions under one name is an error") {
+    object Snippet extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "collide"
+
+      def twice(n: Rep[Int]): Rep[Int] = n * unit(2)
+
+      def snippet(x: Rep[Int]): Rep[Int] =
+        fun[Int, Int]("dbl")(twice)(x) + fun[Int, Int]("dbl")(twice)(x)
+    }
+
+    val e = intercept[LMSStagingException] { Snippet.code }
+    assert(e.getMessage.contains("`dbl`"), e.getMessage)
+    // The three things the message owes a reader: what happened, the rule, and
+    // what to write instead.
+    assert(e.getMessage.contains("has to be unique"), e.getMessage)
+    assert(e.getMessage.contains("rename"), e.getMessage)
+  }
+
+  // The three ways one name legitimately comes back, none of which may trip the
+  // check above. A recursion is the sharp one: every mention re-enters `fun`
+  // under the same name, and rejecting the second would reject the feature.
+  test("a name may come back when it is the same function") {
+    object Rec extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "recTwice"
+
+      def fact: Rep[Int => Int] = fun[Int, Int]("fact") { (n: Rep[Int]) =>
+        if n === unit(0) then unit(1) else n * fact(n - unit(1))
+      }
+
+      def snippet(x: Rep[Int]): Rep[Int] = fact(x) + fact(x)
+    }
+    check(Rec.eval, n => 2 * (1 to n).product, "named recursion", Seq(0, 2, 5))
+
+    // A second `code` re-enters `fun("snippet")` with the same closure.
+    object Twice extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "codeTwice"
+
+      def snippet(x: Rep[Int]): Rep[Int] = x * unit(2)
+    }
+    assert(Twice.code == Twice.code)
+
+    // Unnamed `fun`s take a fresh name each, so two of them never meet.
+    object Fresh extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "freshTwice"
+
+      def twice(n: Rep[Int]): Rep[Int] = n * unit(2)
+
+      def snippet(x: Rep[Int]): Rep[Int] = fun(twice)(x) + fun(twice)(x + unit(1))
+    }
+    check(Fresh.eval, n => n * 2 + (n + 1) * 2, "fresh names")
   }
 
   // Three calls, so the block has to survive two more `fill`s after the first
