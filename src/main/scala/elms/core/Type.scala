@@ -9,7 +9,7 @@ trait Type derives CanEqual
 // type, so `ScalaCodegen` drops it. The two backends therefore disagree on what
 // copying a struct does to the field, and the C one is right.
 case class ARRAY(inner: Type, len: Option[Int] = None) extends Type
-case class ARROW(args: Type, out: Type) extends Type
+case class ARROW(args: Seq[Type], out: Type) extends Type
 
 // A half-open interval with a step of 1 that nothing records.
 //

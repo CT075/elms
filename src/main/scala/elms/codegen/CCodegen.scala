@@ -82,7 +82,7 @@ class CCodegen(
     fatElems =
       if !opts.fatArrays then Set.empty
       else lowered.functions.flatMap { (_, fdef) =>
-        fatElementTypes(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
+        fatElementTypes(topEnv ++ fdef.args)(fdef.body)
       }.toSet.filter { elem => elemTag(elem).isDefined }
 
     // Ahead of the struct declarations, because a struct can have a fat array
@@ -105,7 +105,7 @@ class CCodegen(
     structsIn(lowered).foreach { repr => w.emitStructDecl(repr) }
 
     val customs = lowered.functions.flatMap { (_, fdef) =>
-      customSignatures(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
+      customSignatures(topEnv ++ fdef.args)(fdef.body)
     }.distinct
 
     customs.groupBy(_._1).foreach { (name, sigs) =>
@@ -127,9 +127,15 @@ class CCodegen(
 
   // A unit parameter is spelled as C's empty parameter list. `void` cannot name
   // a parameter, and a caller has nothing to pass for it anyway.
-  private def renderArgs(name: Name, ty: Type): String = ty match {
-    case UNIT => "void"
-    case _    => s"${ty.renderParam} ${name.render(cfg.varPrefix)}"
+  // `void` when nothing survives, which is what `emitArgTerms` already does at
+  // the call: C cannot pass a unit and nothing generated computes one by
+  // passing it. A parameter list that is all units is therefore empty, not a
+  // list of nothings.
+  private def renderArgs(args: Seq[(Name, Type)]): String = {
+    val passed = args.filterNot { (_, ty) => ty == UNIT }
+    if passed.isEmpty then "void"
+    else passed.map { (n, ty) => s"${ty.renderParam} ${n.render(cfg.varPrefix)}" }
+      .mkString(", ")
   }
 
   extension [A: Primitive](x: A)
@@ -361,7 +367,7 @@ class CCodegen(
     case Let(x, e1, e2, _) => fatElementTypes(env)(e1) ++
         fatElementTypes(env.setOrRemove(x, inferType(env)(e1)))(e2)
 
-    case Function(arg, inty, _, body, _) => fatElementTypes(env + (arg -> inty))(body)
+    case Function(args, _, body, _) => fatElementTypes(env ++ args)(body)
 
     case E(op, children) => {
       val nested = children.flatMap(fatElementTypes(env)).toSet
@@ -457,7 +463,7 @@ class CCodegen(
         case _                   => None
       }
 
-    case View.Function(arg, inty, outty, _, _) => Some(ARROW(inty, outty))
+    case View.Function(args, outty, _, _) => Some(ARROW(args.map(_._2), outty))
 
     case View.Print(_) | View.Println(_) => Some(UNIT)
     // `UNIT`, the route `Print` already takes, which is what keeps `emitAssign`
@@ -474,7 +480,7 @@ class CCodegen(
     case View.StringSubstring(_, _, _) => Some(STRING)
   }
 
-  private def functionType(fdef: Function): Type = ARROW(fdef.inty, fdef.outty)
+  private def functionType(fdef: Function): Type = ARROW(fdef.args.map(_._2), fdef.outty)
 
   // `Op.StructSet` carries only the field name, so the receiver's type is the
   // only route to what that field was declared as.
@@ -493,7 +499,7 @@ class CCodegen(
       case STRUCT(repr) => repr +: repr.members.values.toSeq
           .flatMap(fromType(seen + repr.name))
       case ARRAY(inner, _) => fromType(seen)(inner)
-      case ARROW(a, b)     => fromType(seen)(a) ++ fromType(seen)(b)
+      case ARROW(a, b)     => a.flatMap(fromType(seen)) ++ fromType(seen)(b)
       case _               => Seq()
     }
 
@@ -508,12 +514,12 @@ class CCodegen(
     def fromTerm(term: Term): Seq[Type] = term match {
       case V(_)                           => Seq()
       case Let(_, e1, e2, _)                 => fromTerm(e1) ++ fromTerm(e2)
-      case Function(_, inty, outty, body, _) => inty +: outty +: fromTerm(body)
+      case Function(args, outty, body, _) => args.map(_._2) ++ (outty +: fromTerm(body))
       case E(op, children)                => fromOp(op) ++ children.flatMap(fromTerm)
     }
 
     prog.functions.flatMap { (_, fdef) =>
-      (fdef.inty +: fdef.outty +: fromTerm(fdef.body)).flatMap(fromType(Set()))
+      (fdef.args.map(_._2) ++ (fdef.outty +: fromTerm(fdef.body))).flatMap(fromType(Set()))
     }.distinctBy(_.name)
   }
 
@@ -527,7 +533,7 @@ class CCodegen(
       case Let(x, e1, e2, _) => customSignatures(env)(e1) ++
           customSignatures(env.setOrRemove(x, inferType(env)(e1)))(e2)
 
-      case Function(arg, inty, _, body, _) => customSignatures(env + (arg -> inty))(body)
+      case Function(args, _, body, _) => customSignatures(env ++ args)(body)
 
       case E(op, children) => {
         val nested = children.flatMap(customSignatures(env))
@@ -574,9 +580,9 @@ class CCodegen(
     // both places is a duplicate rather than a repetition.
     private inline def emitFunctionHeader(topEnv: Env)(fname: Name, fdef: Function)
         : Unit = {
-      val Function(arg, inty, outty, body, notes) = fdef
-      renderContract(notes, operand(topEnv + (arg -> inty))).foreach(out.emitln)
-      val argsS = renderArgs(arg, inty)
+      val Function(args, outty, body, notes) = fdef
+      renderContract(notes, operand(topEnv ++ args)).foreach(out.emitln)
+      val argsS = renderArgs(args)
       out.emitln(s"${outty.render} ${fname.render(cfg.varPrefix)}($argsS);")
     }
 
@@ -611,10 +617,10 @@ class CCodegen(
     }
 
     private def emitFunction(topEnv: Env)(fname: Name, fdef: Function): Unit = {
-      val Function(arg, inty, outty, body, _) = fdef
+      val Function(args, outty, body, _) = fdef
 
-      val env = topEnv + (arg -> inty)
-      val argsS = renderArgs(arg, inty)
+      val env = topEnv ++ args
+      val argsS = renderArgs(args)
 
       out.emitln(s"${outty.render} ${fname.render(cfg.varPrefix)}($argsS) {")
       out.indented {
@@ -917,7 +923,7 @@ class CCodegen(
       case View.RangeForEach(_, _, _, _) => throw loopInExpr("RangeForEach", term)
       case View.While(_, _)              => throw loopInExpr("While", term)
 
-      case View.Function(_, _, _, _, _) => out.lambdaBackstop()
+      case View.Function(_, _, _, _) => out.lambdaBackstop()
 
       case View.Comment(parts, meta, args) =>
         renderInterpolated(parts, args.map(operand(env)), meta).foreach(out.emitln)
@@ -1053,7 +1059,7 @@ class CCodegen(
         out.emitln(";")
       }
 
-      case View.Function(_, _, _, _, _) => {
+      case View.Function(_, _, _, _) => {
         out.lambdaBackstop()
         out.emitln(";")
       }
@@ -1118,7 +1124,7 @@ class CCodegen(
         case View.RangeForEach(_, _, _, _) => throw loopInExpr("RangeForEach", term)
         case View.While(_, _)              => throw loopInExpr("While", term)
 
-        case View.Function(_, _, _, _, _) => {
+        case View.Function(_, _, _, _) => {
           out.lambdaBackstop()
           out.emitln(";")
           out.emitFallback(sink)
@@ -1210,7 +1216,7 @@ class CCodegen(
 
       case View.ArrayCopy(dst, src, len) => out.emitMemcpy(env)(dst, src, len)
 
-      case View.Function(_, _, _, _, _) => {
+      case View.Function(_, _, _, _) => {
         out
           .invalidTerm(s"C backend does not support anonymous functions/lambdas: $term")
         out.emitln(";")

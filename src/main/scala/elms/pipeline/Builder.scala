@@ -17,7 +17,7 @@ abstract class Builder {
   def fresh(): Name = Name.from(counter.tick())
   def variable(name: Name): Exp
 
-  def fun(name: Name, top: Boolean, arg: Name, inty: Type, outty: Type): FunctionStub
+  def fun(name: Name, top: Boolean, args: Seq[(Name, Type)], outty: Type): FunctionStub
 
   def reflect(op: Op, children: Seq[Exp]): Exp
 

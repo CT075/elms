@@ -33,13 +33,12 @@ object Note {
 // clause to the whole function has nowhere else to put it: ACSL's `requires`
 // is a syntax error anywhere but here.
 case class Function(
-    arg: Name,
-    inty: Type,
+    args: Seq[(Name, Type)],
     outty: Type,
     body: Term,
     notes: Seq[Note]
 ) extends Term {
-  def map(f: Term => Term): Function = Function(arg, inty, outty, f(body), notes)
+  def map(f: Term => Term): Function = Function(args, outty, f(body), notes)
 }
 
 case class Program(functions: Seq[(Name, Function)], staticData: Seq[(Name, StaticData)])
@@ -51,7 +50,7 @@ object Term {
     case E(_, children) => 1 + children.map(size).sum
     case V(_) => 1
     case Let(_, e1, e2, _) => 1 + size(e1) + size(e2)
-    case Function(_, _, _, body, _) => 1 + size(body)
+    case Function(_, _, body, _) => 1 + size(body)
   }
 }
 

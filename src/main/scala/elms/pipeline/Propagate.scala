@@ -34,9 +34,8 @@ object Propagate {
         case Some(FConst(c))    => E(c, Seq())
         case Some(FCopy(other)) => V(other)
       }
-    case Function(arg, inty, outty, body, notes) => Function(
-        arg,
-        inty,
+    case Function(args, outty, body, notes) => Function(
+        args,
         outty,
         propagateImpl(body, facts),
         notes.map(propagateNote(_, facts))

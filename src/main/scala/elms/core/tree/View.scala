@@ -45,13 +45,12 @@ object View {
   }
 
   final case class Function(
-      arg: Name,
-      inty: Type,
+      args: Seq[(Name, Type)],
       outty: Type,
       body: Term,
       notes: Seq[Note]
   ) extends View {
-    def into: Term = elms.core.tree.Function(arg, inty, outty, body, notes)
+    def into: Term = elms.core.tree.Function(args, outty, body, notes)
   }
 
   final case class Const[T](value: T)(using val prim: Primitive[T]) extends View {
@@ -290,8 +289,8 @@ object View {
   def view(t: Term): Option[View] = t match {
     case elms.core.tree.V(name) => Some(V(name))
 
-    case elms.core.tree.Function(arg, inty, outty, body, notes) =>
-      Some(Function(arg, inty, outty, body, notes))
+    case elms.core.tree.Function(args, outty, body, notes) =>
+      Some(Function(args, outty, body, notes))
 
     case elms.core.tree.Let(x, me1, e2, notes) =>
       val (mty, e1) = me1 match {

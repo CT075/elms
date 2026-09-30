@@ -20,8 +20,7 @@ class DedupFunctionsTests extends AnyFunSuite {
   // `f(arg) = arg * k`, with the bound names given, so two callers can build
   // the same function under different numbering.
   private def times(arg: Name, tmp: Name, k: Int): Function = Function(
-    arg,
-    INT,
+    Seq((arg, INT)),
     INT,
     Let(tmp, E(Op.Times, Seq(V(arg), E(Op.Const(k), Seq()))), V(tmp), Seq()),
     Seq()
@@ -53,8 +52,7 @@ class DedupFunctionsTests extends AnyFunSuite {
 
     // `main(y) = g(y)`, naming the copy rather than the original.
     val main = Function(
-      n("y"),
-      INT,
+      Seq((n("y"), INT)),
       INT,
       Let(n("r"), E(Op.App, Seq(V(n("g")), V(n("y")))), V(n("r")), Seq()),
       Seq()
@@ -71,8 +69,7 @@ class DedupFunctionsTests extends AnyFunSuite {
   // would differ in exactly one place: the name each one calls.
   test("a recursive function and a copy of it become one") {
     def loop(self: Name, arg: Name, tmp: Name): Function = Function(
-      arg,
-      INT,
+      Seq((arg, INT)),
       INT,
       Let(tmp, E(Op.App, Seq(V(self), V(arg))), V(tmp), Seq()),
       Seq()
@@ -89,8 +86,7 @@ class DedupFunctionsTests extends AnyFunSuite {
   // so this needs a second round to settle.
   test("a merge that makes two callers equal is followed through") {
     def caller(callee: Name, arg: Name, tmp: Name): Function = Function(
-      arg,
-      INT,
+      Seq((arg, INT)),
       INT,
       Let(tmp, E(Op.App, Seq(V(callee), V(arg))), V(tmp), Seq()),
       Seq()

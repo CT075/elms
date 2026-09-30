@@ -158,11 +158,10 @@ class LambdaTests extends AnyFunSuite {
       ast.V(Name.from("y")),
       Seq()
     )
-    val lambda = ast.Function(Name.from("a"), INT, INT, body, Seq())
+    val lambda = ast.Function(Seq((Name.from("a"), INT)), INT, body, Seq())
 
     val main = ast.Function(
-      Name.from("x"),
-      INT,
+      Seq((Name.from("x"), INT)),
       INT,
       ast.Let(Name.from("f"), lambda, ast.V(Name.from("x")), Seq()),
       Seq()

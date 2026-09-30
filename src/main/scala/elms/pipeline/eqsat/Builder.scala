@@ -193,12 +193,11 @@ private class FunctionBuilder(
   def lambda(
       name: Name,
       cls: EClassCall,
-      arg: Name,
-      inty: Type,
+      args: Seq[(Name, Type)],
       outty: Type,
       body: Builder.Handle,
       contract: Seq[PendingNote]
-  ): Unit = regions.push(name, cls, Lambda(arg, inty, outty, body.asStmt, contract))
+  ): Unit = regions.push(name, cls, Lambda(args, outty, body.asStmt, contract))
 
   // Builds `f` with a contract buffer of its own and hands back what it
   // collected, so a clause raised inside a lambda belongs to the lambda rather
@@ -367,7 +366,7 @@ private class FunctionBuilder(
     case ast.V(name)        => weakByName.get(name).foreach { _.demanded = true }
     case ast.E(_, children) => children.foreach(recordDemand)
     case ast.Let(_, e1, e2, _) => { recordDemand(e1); recordDemand(e2) }
-    case ast.Function(_, _, _, body, _) => recordDemand(body)
+    case ast.Function(_, _, body, _) => recordDemand(body)
   }
 
   // Drops the bindings whose weak cell was never set.
@@ -386,8 +385,8 @@ private class FunctionBuilder(
       else ast.Let(x, bound, tail, notes)
     }
 
-    case ast.Function(arg, inty, outty, body, notes) => ast
-        .Function(arg, inty, outty, dropUndemanded(body), notes)
+    case ast.Function(args, outty, body, notes) => ast
+        .Function(args, outty, dropUndemanded(body), notes)
 
     case ast.E(op, children) => ast.E(op, children.map(dropUndemanded))
     case v @ ast.V(_)        => v
@@ -474,11 +473,11 @@ private class FunctionBuilder(
       val e = elab(els, cache.enter)
       (prefix, ast.E(Op.IfThenElse, Seq(c, t, e)))
     }
-    case Lambda(arg, inty, outty, body, notes) => (
+    case Lambda(args, outty, body, notes) => (
         Seq(),
         // Against an empty scope, for the reason a top-level contract is: the
         // clause sits at the signature, where the body binds nothing yet.
-        ast.Function(arg, inty, outty, elab(body, cache.enter), elabNotes(notes, ScopeMap()))
+        ast.Function(args, outty, elab(body, cache.enter), elabNotes(notes, ScopeMap()))
       )
     case RangeFor(x, st, end, body) => {
       val (prefix1, stt) = elabCls(st, cache)
@@ -525,7 +524,11 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
   private def ensureBuilder(msg: String): FunctionBuilder = current.peek
     .getOrElse { throw LMSRuntimeException(s"BUG: $msg") }
 
-  private def topfun(name: Name, arg: Name, inty: Type, outty: Type): FunctionStub = {
+  private def topfun(
+      name: Name,
+      args: Seq[(Name, Type)],
+      outty: Type
+  ): FunctionStub = {
     def fill(body: => Exp): Unit = {
       val builder = FunctionBuilder(name, cfg, predefs(), this.fresh)
       current.push(builder)
@@ -533,26 +536,35 @@ class Builder(cfg: Builder.Config) extends pipeline.Builder {
       builder.ret(tail)
       val (result, contract) = builder.extract
       current.pop()
-      functions(name) = F(ast.Function(arg, inty, outty, result, contract))
+      functions(name) = F(ast.Function(args, outty, result, contract))
     }
     functions(name) = Stub
     current.foreach { _.register(name) }
     FunctionStub(Global(name), fill)
   }
 
-  private def lambda(name: Name, arg: Name, inty: Type, outty: Type): FunctionStub = {
+  private def lambda(
+      name: Name,
+      args: Seq[(Name, Type)],
+      outty: Type
+  ): FunctionStub = {
     val builder = ensureBuilder("attempted to define lambda outside function")
     val cls = builder.symbol(name)
     def fill(body: => Exp): Unit = {
       val (r, contract) = builder.nested { region(body) }
-      builder.lambda(name, cls, arg, inty, outty, r, contract)
+      builder.lambda(name, cls, args, outty, r, contract)
     }
 
     FunctionStub(Local(cls), fill)
   }
 
-  def fun(name: Name, top: Boolean, arg: Name, inty: Type, outty: Type): FunctionStub =
-    if top then topfun(name, arg, inty, outty) else lambda(name, arg, inty, outty)
+  def fun(
+      name: Name,
+      top: Boolean,
+      args: Seq[(Name, Type)],
+      outty: Type
+  ): FunctionStub =
+    if top then topfun(name, args, outty) else lambda(name, args, outty)
 
   def reflect(op: Op, children: Seq[Exp]): Exp =
     ensureBuilder("attempted to `reflect` outside function").reflect(op, children)

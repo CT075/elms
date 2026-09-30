@@ -66,9 +66,9 @@ object DedupFunctions {
       ns.map { n => n.copy(args = n.args.map(go(_, env))) }
 
     def fn(g: Function, env: Map[Name, Name]): Function = {
-      val arg = fresh()
-      val inner = env + (g.arg -> arg)
-      Function(arg, g.inty, g.outty, go(g.body, inner), notes(g.notes, inner))
+      val args = g.args.map { (_, ty) => (fresh(), ty) }
+      val inner = env ++ g.args.map(_._1).zip(args.map(_._1))
+      Function(args, g.outty, go(g.body, inner), notes(g.notes, inner))
     }
 
     // A name this walk did not bind is a reference out of the function, to
@@ -106,9 +106,9 @@ object DedupFunctions {
       case V(name)            => V(alias.getOrElse(name, name))
       case Let(x, e1, e2, ns) => Let(x, go(e1), go(e2), notes(ns))
       case E(op, children)    => E(op, children.map(go))
-      case g: Function        => Function(g.arg, g.inty, g.outty, go(g.body), notes(g.notes))
+      case g: Function        => Function(g.args, g.outty, go(g.body), notes(g.notes))
     }
 
-    Function(f.arg, f.inty, f.outty, go(f.body), notes(f.notes))
+    Function(f.args, f.outty, go(f.body), notes(f.notes))
   }
 }

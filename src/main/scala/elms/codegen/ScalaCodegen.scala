@@ -17,8 +17,16 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
     prog.functions.foreach { (fname, fdef) => w.emitFunction(fname, fdef) }
   }
 
-  private def renderArgs(name: Name, ty: Type): String =
-    s"${name.render(cfg.varPrefix)}: ${ty.render}"
+  private def renderArgs(args: Seq[(Name, Type)]): String =
+    args.map { (n, ty) => s"${n.render(cfg.varPrefix)}: ${ty.render}" }.mkString(", ")
+
+  // Scala writes a one-argument function type without the parentheses, so this
+  // keeps `Char => T` rather than turning every existing signature into
+  // `(Char) => T`.
+  private def renderArrow(args: Seq[Type], out: Type): String = args match {
+    case Seq(one) => s"${one.render} => ${out.render}"
+    case many     => s"(${many.map(_.render).mkString(", ")}) => ${out.render}"
+  }
 
   extension [A: Primitive](x: A)
     def render: String = summon[Primitive[A]] match {
@@ -64,10 +72,10 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
       renderNotes(notes, side, operand).foreach(out.emitln)
 
     private def emitFunction(fname: Name, fdef: Function): Unit = {
-      val Function(arg, inty, outty, body, notes) = fdef
+      val Function(args, outty, body, notes) = fdef
 
       renderContract(notes, operand).foreach(out.emitln)
-      val argsS = renderArgs(arg, inty)
+      val argsS = renderArgs(args)
       val header = s"def ${fname.render(cfg.varPrefix)}($argsS): ${outty.render} = {"
       out.emitln(header)
       out.indented { out.emitTerm(body) }
@@ -114,8 +122,8 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
             val (vkd, annotation) = mutTy match {
               case Some(ty) => ("var", s": ${ty.render}")
               case None     => e1 match {
-                  case Function(_, inty, outty, _, _) =>
-                    ("lazy val", s": (${inty.render} => ${outty.render})")
+                  case Function(args, outty, _, _) =>
+                    ("lazy val", s": (${renderArrow(args.map(_._2), outty)})")
                   case _ => ("val", "")
                 }
             }
@@ -131,9 +139,9 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
       }
       case View.Comment(parts, meta, args) =>
         renderInterpolated(parts, args.map(operand), meta).foreach(out.emitln)
-      case View.Function(arg, inty, _outty, body, _) => {
+      case View.Function(args, _outty, body, _) => {
         out.emit("(")
-        out.emit(renderArgs(arg, inty))
+        out.emit(renderArgs(args))
         out.emitln(") => {")
         out.indented { out.emitTerm(body) }
         out.emitln("}")

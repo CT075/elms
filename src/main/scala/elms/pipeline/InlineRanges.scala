@@ -91,10 +91,10 @@ object InlineRanges {
       (Let(x, t1, t2, ns), u1 ++ un ++ (u2 - x))
     }
 
-    case Function(arg, inty, outty, body, notes) => {
+    case Function(args, outty, body, notes) => {
       val (b, ub) = go(body, ranges, atoms)
       val (ns, un) = goNotes(notes, ranges, atoms)
-      (Function(arg, inty, outty, b, ns), (ub - arg) ++ un)
+      (Function(args, outty, b, ns), (ub -- args.map(_._1)) ++ un)
     }
 
     // A range bound inside a loop body cannot be named outside it, so nothing

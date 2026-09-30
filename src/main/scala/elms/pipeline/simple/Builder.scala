@@ -48,8 +48,7 @@ class Builder extends pipeline.Builder {
   override def fun(
       name: Name,
       top: Boolean,
-      arg: Name,
-      inty: Type,
+      args: Seq[(Name, Type)],
       outty: Type
   ): FunctionStub = {
     def fill(body: => Exp): Unit = {
@@ -63,7 +62,7 @@ class Builder extends pipeline.Builder {
       contracts = Nil
 
       val bodyexp = region(body)
-      val f = ast.Function(arg, inty, outty, bodyexp, contracts.reverse)
+      val f = ast.Function(args, outty, bodyexp, contracts.reverse)
 
       contracts = outerContracts
 
