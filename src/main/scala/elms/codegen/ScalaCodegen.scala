@@ -200,6 +200,17 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
         out.emit("~")
         out.emitMaybeParenthesized(t)
       }
+      // `Array.copy` takes offsets that `Op.ArrayCopy` does not have, and both
+      // ends always start at zero.
+      case View.ArrayCopy(dst, src, len) => {
+        out.emit("Array.copy(")
+        out.emitTerm(src)
+        out.emit(", 0, ")
+        out.emitTerm(dst)
+        out.emit(", 0, ")
+        out.emitTerm(len)
+        out.emit(")")
+      }
       case View.Range(x, y)   => out.emitBinop("until", x, y)
       case View.RangeStart(t) => {
         out.emitMaybeParenthesized(t)

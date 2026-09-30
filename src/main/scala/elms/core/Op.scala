@@ -91,11 +91,10 @@ object Op {
   case object While extends Control
 
   case class ArrayNew(val typ: Type) extends Write
-  // The element type is named rather than left to a context bound, so a backend
-  // can read it off the op the way it reads `ArrayNew`'s.
-  case class ArrayInit[T](init: Seq[T])(using val elem: Typable[T]) extends Write {
-    def elemTy: Type = elem.identity
-  }
+  // A bulk copy between two arrays, which is `memcpy` in C and `Array.copy` on
+  // the JVM. Separate from a loop of `ArraySet`s because a backend can do it in
+  // one call, and because nothing in a loop says the regions do not overlap.
+  case object ArrayCopy extends Write // (dst, src, len)
   case object ArrayGet extends Read
   case object ArraySet extends Write
   case object ArrayLength extends Pure

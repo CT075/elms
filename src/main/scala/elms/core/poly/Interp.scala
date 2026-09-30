@@ -1,9 +1,10 @@
 package elms.core.poly.eval
 
 import scala.annotation.targetName
+import scala.reflect.ClassTag
 
 import elms.core.__Virtualized
-import elms.core.{Primitive, Typable, INT, BOOL, CHAR, UNIT, STRING}
+import elms.core.{Primitive, Typable, AsStaticData, INT, BOOL, CHAR, UNIT, STRING}
 import elms.core.poly._
 
 trait Interp
@@ -112,11 +113,16 @@ trait Interp
     Rep(arr.asInstanceOf[Array[A]])
   }
 
-  def initFrom[A: Typable](entries: Seq[A]): Rep[Array[A]] = {
+  // The bounds the staged version needs. Nothing here uses them, and every
+  // call site that compiled before still does.
+  def initFrom[A: Typable: AsStaticData: ClassTag](entries: Seq[A]): Rep[Array[A]] = {
     val arr = newArray[A](Rep(entries.length))
     entries.zipWithIndex.foreach { case (x, i) => arr.set(Rep(i), Rep(x)) }
     arr
   }
+
+  def arrayCopy[A](dst: Rep[Array[A]], src: Rep[Array[A]], len: Rep[Int]): Rep[Unit] =
+    Rep(Array.copy(src.v, 0, dst.v, 0, len.v))
 
   extension [A](arr: Rep[Array[A]])
     def get(i: Rep[Int]): Rep[A] = Rep(arr.v(i.v))

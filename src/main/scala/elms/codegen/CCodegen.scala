@@ -425,6 +425,7 @@ class CCodegen(
         case _                      => None
       }
     case View.ArraySet(_, _, _)         => Some(UNIT)
+    case View.ArrayCopy(_, _, _)        => Some(UNIT)
     case View.ArrayLength(_)            => Some(INT)
     case View.StructGet(repr, _, field) => repr.get(field)
     case View.StructSet(_, _, _)        => Some(UNIT)
@@ -476,7 +477,6 @@ class CCodegen(
     def fromOp(op: Op): Seq[Type] = op match {
       case Op.VarNew(ty)         => Seq(ty)
       case Op.ArrayNew(ty)       => Seq(ty)
-      case ai @ Op.ArrayInit(_)  => Seq(ARRAY(ai.elemTy))
       case Op.StructGet(repr, _) => Seq(STRUCT(repr))
       case Op.Custom(_, ty)      => Seq(ty)
       case _                     => Seq()
@@ -581,6 +581,28 @@ class CCodegen(
       out.emitln("}")
       out.emitln("")
     }
+
+    // `memcpy` wants bytes, so the element type comes off the destination. A
+    // fat destination is copied into through the pointer it carries, which is
+    // the same `.data` an index goes through.
+    private def emitMemcpy(env: Env)(dst: Term, src: Term, len: Term): Unit =
+      inferType(env)(dst) match {
+        case Some(ARRAY(elem, _)) => {
+          need(Header.String)
+          out.emit("memcpy(")
+          out.emitSubscriptable(env)(dst)
+          out.emit(", ")
+          out.emitSubscriptable(env)(src)
+          out.emit(s", sizeof(${elem.render}) * ")
+          out.emitExpr(env)(len)
+          out.emitln(");")
+        }
+
+        case ty => {
+          out.invalidTerm(s"C backend cannot copy into a $ty: $dst")
+          out.emitln(";")
+        }
+      }
 
     private def emitStrHelper(env: Env)(name: String, args: Term*): Unit = {
       need(Header.ElmsLib)
@@ -766,7 +788,7 @@ class CCodegen(
         out.emit("]")
       }
 
-      case View.ArraySet(_, _, _) => {
+      case View.ArraySet(_, _, _) | View.ArrayCopy(_, _, _) => {
         out.emit("({")
         out.emitStmt(env)(term)
         out.emit("})")
@@ -924,6 +946,8 @@ class CCodegen(
         out.emitExpr(env)(x)
         out.emitln(";")
       }
+
+      case View.ArrayCopy(dst, src, len) => out.emitMemcpy(env)(dst, src, len)
 
       case View.VarSet(x, v) => {
         out.emitExpr(env)(x)
@@ -1118,6 +1142,8 @@ class CCodegen(
         out.emitExpr(env)(x)
         out.emitln(";")
       }
+
+      case View.ArrayCopy(dst, src, len) => out.emitMemcpy(env)(dst, src, len)
 
       case View.Function(_, _, _, _, _) => {
         out
