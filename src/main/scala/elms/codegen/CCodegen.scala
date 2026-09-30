@@ -148,6 +148,8 @@ class CCodegen(
       // goes through `renderDeclarator`; elsewhere the array has decayed.
       case ARRAY(t, _)  => s"${t.render} *"
       case STRUCT(repr) => s"struct ${repr.name} *"
+
+      case RANGE => elmsRange("elms_range")
       case _ => {
         Log.error(s"Attempted to render unsupported type $ty")
         s"/* Unsupported type $ty */ ???"
@@ -175,6 +177,8 @@ class CCodegen(
       case V(_) | E(_: Const[_], Nil)     => true
       case View.Extractors.ArrayGet(_, _) => true
       case View.Extractors.ArrayLength(_) => true
+      case View.Extractors.RangeStart(_)  => true
+      case View.Extractors.RangeEnd(_)    => true
       case View.Extractors.App(_, _)      => true
       case _                              => false
     }
@@ -237,11 +241,34 @@ class CCodegen(
   private val headers = scala.collection.mutable.Set[Header]()
   private def need(h: Header): Unit = { val _ = headers.add(h) }
 
+  // `text` when the emitted C is allowed to name `elms_range`, and a refusal
+  // naming the option to turn back on when it is not.
+  //
+  // A range only reaches one of these positions if it survived `InlineRanges`,
+  // so it really did escape its `foreach`. Every position that would name the
+  // struct comes through here, which is what stops the option being off from
+  // leaving a reference to a type the file no longer includes. `text` is
+  // by-name so a refused position renders no operands either.
+  private def elmsRange(text: => String): String =
+    if opts.firstClassRanges then {
+      need(Header.ElmsLib)
+      text
+    } else {
+      val msg = "a range escaped its `foreach`, and `firstClassRanges` is off:" +
+        " enable it, or keep the range inside the loop"
+      Log.error(msg)
+      s"/* ERROR: $msg */"
+    }
+
   // What to hand back for `ty` when there is nothing real to hand back.
   private def zero(ty: Type): String = ty match {
     case INT | CHAR => "0"
     case BOOL       => "false"
-    case _          => "NULL"
+    // `NULL` is not a value of a struct type. Only reachable once an error has
+    // already been reported, but a second breakage on top of the first is what
+    // makes the output hard to read.
+    case RANGE => elmsRange("elms_range_mk(0, 0)")
+    case _     => "NULL"
   }
 
   // CR-soon cwong: We can probably perform `inferType` at the same time
@@ -272,7 +299,7 @@ class CCodegen(
     case View.Equals(_, _) | View.Lt(_, _) | View.Gt(_, _) | View.Le(_, _) | View
           .Ge(_, _) | View.And(_, _) | View.Or(_, _) | View.Not(_) => Some(BOOL)
     case View.StrictAnd(_, _) | View.StrictOr(_, _) | View.Xor(_, _) => Some(BOOL)
-    case View.Range(_, _)                      => None
+    case View.Range(_, _)                      => Some(RANGE)
     case View.RangeStart(_) | View.RangeEnd(_) => Some(INT)
 
     case View.VarNew(ty, t) => Some(ty)
@@ -625,14 +652,18 @@ class CCodegen(
         out.emit("})")
       }
 
-      case View.RangeStart(t) => out
-          .invalidTerm(s"C backend has no first-class range value: $t")
+      case View.RangeStart(t) => {
+        out.emitMaybeParenthesizedExpr(env)(t)
+        out.emit(".start")
+      }
 
-      case View.RangeEnd(t) => out
-          .invalidTerm(s"C backend has no first-class range value: $t")
+      case View.RangeEnd(t) => {
+        out.emitMaybeParenthesizedExpr(env)(t)
+        out.emit(".end")
+      }
 
-      case View.Range(_, _) => out.invalidTerm(
-          s"C backend only supports ranges directly in foreach loops: $term"
+      case View.Range(st, end) => out.emit(
+          elmsRange(s"elms_range_mk(${operand(env)(st)}, ${operand(env)(end)})")
         )
 
       case View.Let(x, _ty, e1, e2, notes) => out.emitLetExpr(env)(x, e1, e2, notes)

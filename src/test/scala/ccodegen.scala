@@ -380,6 +380,67 @@ class CCodegenTests extends SnapshotFunSuite {
     assert(!code.contains("ERROR"))
   }
 
+  // `__ifThenElse[T]` is unconstrained in `T`, which makes this the only way a
+  // range outlives the `foreach` it was written for: nothing else in the DSL
+  // has a `Typable[Range]` to summon. `InlineRanges` cannot see through the
+  // `if`, so this is the shape `elms_range` exists for.
+  test("a range bound by an if gets a struct") {
+    object Snippet extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val r: Rep[Range] = if x === unit(0) then 0.until(x) else x.until(unit(10))
+        val v = newVar(unit(0))
+        for (i <- r) { v := v.get + i }
+        v.get
+      }
+    }
+    val code = Snippet.code
+    check("range-first-class", code)
+    assert(!code.contains("ERROR"))
+    assert(code.contains("elms_range"))
+    assert(code.contains("#include \"elms_lib.h\""))
+  }
+
+  // With the feature off, the file has to name no part of it: no `elms_range`,
+  // no constructor, no header. Refusing the type while still emitting a call to
+  // `elms_range_mk` would leave the option half-applied, and a file that
+  // includes a header for a feature it was told not to use.
+  test("firstClassRanges off leaves no trace of the struct") {
+    val code = new TunedDriver[Int, Int](
+      CCodegen(opts = CCodegen.Options(firstClassRanges = false))
+    ) {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val r: Rep[Range] = if x === unit(0) then 0.until(x) else x.until(unit(10))
+        val v = newVar(unit(0))
+        for (i <- r) { v := v.get + i }
+        v.get
+      }
+    }.code
+
+    assert(!code.contains("elms_range"))
+    assert(!code.contains("elms_lib.h"))
+
+    // Each refused position is a line that does not compile, so each one says
+    // so and each names the option, rather than the first one saying it and
+    // the rest pointing back at it.
+    val refusals = code.linesIterator.filter(_.contains("ERROR")).toVector
+    assert(refusals.nonEmpty)
+    assert(refusals.forall(_.contains("`firstClassRanges` is off")))
+  }
+
+  // Tier 1's whole purpose is that an ordinary loop needs no runtime support.
+  // That is invisible unless something asserts the header is absent.
+  test("only a first-class range asks for elms_lib.h") {
+    object Loop extends CSnippetDriver[Int, Int] {
+      def snippet(x: Rep[Int]): Rep[Int] = {
+        val acc = newVar(unit(0))
+        for (i <- (0.until(x)): Rep[Range]) { acc := acc.get + i }
+        acc.get
+      }
+    }
+
+    assert(!Loop.code.contains("elms_lib.h"))
+  }
+
   // The flag suppresses the include lines and changes nothing else. Asserting
   // that by diff is what stops it from quietly disabling the feature the
   // includes were there for.

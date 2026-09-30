@@ -36,6 +36,9 @@ class ScalaCodegen(cfg: Config = Config.scalaDefault) extends Backend(cfg) {
     case CHAR        => "Char"
     case STRING      => "String"
     case ARRAY(t, _) => s"Array[${t.render}]"
+    // `scala.Range` carries a step that `RANGE` does not, which costs nothing
+    // while `until` is the only constructor and every range has step 1.
+    case RANGE       => "Range"
     case _           => {
       Log.error(s"Attempted to render unsupported type $ty")
       s"/* Unsupported type $ty */ ???"
