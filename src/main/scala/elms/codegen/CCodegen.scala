@@ -747,10 +747,10 @@ class CCodegen(
       case View.Times(x, y)  => out.emitBinop(env)("*", x, y)
       case View.Minus(x, y)  => out.emitBinop(env)("-", x, y)
       case View.Equals(x, y) => out.emitBinop(env)("==", x, y)
-      case View.Lt(x, y)     => out.emitBinop(env)("<", x, y)
-      case View.Gt(x, y)     => out.emitBinop(env)(">", x, y)
-      case View.Le(x, y)     => out.emitBinop(env)("<=", x, y)
-      case View.Ge(x, y)     => out.emitBinop(env)(">=", x, y)
+      case View.Lt(x, y)     => out.emitCompare(env)("<", x, y)
+      case View.Gt(x, y)     => out.emitCompare(env)(">", x, y)
+      case View.Le(x, y)     => out.emitCompare(env)("<=", x, y)
+      case View.Ge(x, y)     => out.emitCompare(env)(">=", x, y)
       case View.And(x, y)    => out.emitBinop(env)("&&", x, y)
       case View.Or(x, y)     => out.emitBinop(env)("||", x, y)
       case View.Not(t)       => {
@@ -1279,6 +1279,22 @@ class CCodegen(
       out.emit(s" $sym ")
       out.emitMaybeParenthesizedExpr(env)(y)
     }
+
+    // An ordering on `char` goes through `unsigned char`, because whether plain
+    // `char` is signed is the target's choice: `'\xe9' < 'a'` is true on x86 and
+    // false on ARM. Scala's `Char` is unsigned, so the cast is also what makes
+    // the two backends agree on the same program.
+    //
+    // `Equals` wants none of this. Both operands convert the same way whichever
+    // signedness the target picked, so the bits that compare equal are the same
+    // bits either way.
+    private def emitCompare(env: Env)(sym: String, x: Term, y: Term): Unit =
+      if Seq(x, y).exists(t => inferType(env)(t).exists(_ == CHAR)) then {
+        out.emit("(unsigned char)")
+        out.emitMaybeParenthesizedExpr(env)(x)
+        out.emit(s" $sym (unsigned char)")
+        out.emitMaybeParenthesizedExpr(env)(y)
+      } else out.emitBinop(env)(sym, x, y)
 
     private def emitNamedStaticData(name: Name, data: StaticData): Unit = {
       val decl = renderDeclarator(data.ty, name.render(cfg.varPrefix))

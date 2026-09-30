@@ -13,6 +13,7 @@ trait Interp
     with BooleanOps
     with EqualityOps
     with IntegerOps
+    with CharOps
     with RangeOps
     with StringOps
     with ArrayOps
@@ -78,6 +79,17 @@ trait Interp
     def >>(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v >> rhs.v)
     def >>>(rhs: Rep[Int]): Rep[Int] = Rep(lhs.v >>> rhs.v)
     def unary_~ : Rep[Int] = Rep(~lhs.v)
+
+  // CharOps
+  extension (lhs: Rep[Char])
+    @targetName("charLt")
+    def <(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v < rhs.v)
+    @targetName("charGt")
+    def >(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v > rhs.v)
+    @targetName("charLe")
+    def <=(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v <= rhs.v)
+    @targetName("charGe")
+    def >=(rhs: Rep[Char]): Rep[Boolean] = Rep(lhs.v >= rhs.v)
 
   // RangeOps
   extension (st: Rep[Int]) def until(end: Rep[Int]): Rep[Range] = Rep(st.v.until(end.v))
