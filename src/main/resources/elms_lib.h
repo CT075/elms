@@ -5,9 +5,11 @@
 #ifndef ELMS_LIB_H
 #define ELMS_LIB_H
 
-/* `ELMS_ARR_DECL` allocates, so the header that needs `malloc` asks for it
- * rather than leaning on whatever includes this. */
+/* The helpers below allocate and compare, so the header that needs these asks
+ * for them rather than leaning on whatever includes it. */
+#include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* A half-open interval that outlived the `foreach` it was written for. */
 typedef struct { int start; int end; } elms_range;
@@ -38,5 +40,43 @@ static inline elms_range elms_range_mk(int start, int end) {
     a.len = 0;                                                    \
     return a;                                                     \
   }
+
+/* Slices of `s`, clamped the way Scala's `drop`, `take` and `slice` clamp. C
+ * would otherwise index outside the string for a negative or oversized bound,
+ * and agreeing with the Scala backend is what makes the two comparable.
+ *
+ * Nothing here owns `s`. `elms_str_take` and `elms_str_substring` allocate and
+ * the caller frees, which nothing generated currently does. */
+
+static inline const char * elms_str_drop(const char * s, int n) {
+  int len = (int)strlen(s);
+  if (n < 0) n = 0;
+  if (n > len) n = len;
+  return s + n;
+}
+
+static inline bool elms_str_startswith(const char * s, const char * p) {
+  return strncmp(s, p, strlen(p)) == 0;
+}
+
+static inline bool elms_str_endswith(const char * s, const char * p) {
+  size_t sl = strlen(s), pl = strlen(p);
+  return sl >= pl && memcmp(s + sl - pl, p, pl) == 0;
+}
+
+static inline char * elms_str_substring(const char * s, int a, int b) {
+  int len = (int)strlen(s);
+  if (a < 0) a = 0;
+  if (b > len) b = len;
+  if (b < a) b = a;
+  char * r = (char *)malloc((size_t)(b - a) + 1);
+  memcpy(r, s + a, (size_t)(b - a));
+  r[b - a] = '\0';
+  return r;
+}
+
+static inline char * elms_str_take(const char * s, int n) {
+  return elms_str_substring(s, 0, n);
+}
 
 #endif /* ELMS_LIB_H */

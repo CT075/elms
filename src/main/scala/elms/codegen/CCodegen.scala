@@ -582,6 +582,16 @@ class CCodegen(
       out.emitln("")
     }
 
+    private def emitStrHelper(env: Env)(name: String, args: Term*): Unit = {
+      need(Header.ElmsLib)
+      out.emit(s"$name(")
+      args.zipWithIndex.foreach { (t, i) =>
+        if i != 0 then out.emit(", ")
+        out.emitExpr(env)(t)
+      }
+      out.emit(")")
+    }
+
     // The thing `[i]` goes after. A bare pointer is subscripted directly and a
     // fat array through the pointer it carries.
     private def emitSubscriptable(env: Env)(t: Term): Unit = {
@@ -827,13 +837,37 @@ class CCodegen(
       case View.Print(t)   => out.emitPrintf(env)(t, "")
       case View.Println(t) => out.emitPrintf(env)(t, "\\n")
 
-      case View.StringLength(_)          => ???
-      case View.StringCharAt(_, _)       => ???
-      case View.StringDrop(_, _)         => ???
-      case View.StringTake(_, _)         => ???
-      case View.StringStartsWith(_, _)   => ???
-      case View.StringEndsWith(_, _)     => ???
-      case View.StringSubstring(_, _, _) => ???
+      // `strlen` answers in `size_t`, and `inferType` says this is an `INT`.
+      // The cast is not cosmetic: unsigned, the value changes what a
+      // comparison against a negative number means.
+      case View.StringLength(t) => {
+        need(Header.String)
+        out.emit("(int)strlen(")
+        out.emitExpr(env)(t)
+        out.emit(")")
+      }
+
+      // Inline because there is nothing to wrap, and asking for a header here
+      // would pull `string.h` into every program that reads a character.
+      case View.StringCharAt(t, i) => {
+        out.emitExpr(env)(t)
+        out.emit("[")
+        out.emitExpr(env)(i)
+        out.emit("]")
+      }
+
+      // The rest go through `elms_lib.h`. Inline, `endsWith` alone needs four
+      // `strlen` calls across two operands, the allocating ones would need a
+      // GNU statement-expression, and the out-of-range clamping has nowhere to
+      // live in an expression.
+      case View.StringDrop(t, n)  => out.emitStrHelper(env)("elms_str_drop", t, n)
+      case View.StringTake(t, n)  => out.emitStrHelper(env)("elms_str_take", t, n)
+      case View.StringStartsWith(t, p) => out
+          .emitStrHelper(env)("elms_str_startswith", t, p)
+      case View.StringEndsWith(t, p) => out
+          .emitStrHelper(env)("elms_str_endswith", t, p)
+      case View.StringSubstring(t, a, b) => out
+          .emitStrHelper(env)("elms_str_substring", t, a, b)
     }
 
     // CR-someday cwong: There is a decent amount of duplication when emitting
