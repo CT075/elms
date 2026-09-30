@@ -1,7 +1,3 @@
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 //@ requires x0 > 0;
 //@ ensures \result > 0;
 int snippet(int x0);

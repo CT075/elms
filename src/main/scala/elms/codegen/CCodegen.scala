@@ -11,17 +11,47 @@ import elms.util.collection.*
 import elms.util.Plumbing.traverse
 import elms.runtime.Log
 
-class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
+object CCodegen {
+  // What the emitted C is allowed to rely on.
+  //
+  // `autoIncludes` is about the file, not the features: a program generated to
+  // be `#include`d into another translation unit already has its headers, and
+  // repeating them is noise. Turning it off never changes what is emitted below
+  // the includes, so the two are independent knobs.
+  case class Options(
+      autoIncludes: Boolean = true,
+      fatArrays: Boolean = true,
+      firstClassRanges: Boolean = true
+  )
+}
+
+class CCodegen(
+    cfg: Config = Config.cDefault,
+    opts: CCodegen.Options = CCodegen.Options()
+) extends Backend(cfg) {
   import ast._
 
+  // The body decides the includes, so it is emitted into a buffer first and the
+  // includes are written in front of whatever it turned out to ask for.
+  //
+  // `captured` is not reused for this: it builds its writer at indent level 0,
+  // and the one other caller wants exactly that.
   def emit(prog: Program, out: java.io.PrintStream): Unit = {
+    headers.clear()
+
+    val buf = new java.io.ByteArrayOutputStream()
+    emitBody(prog, makeIndentedWriter(new java.io.PrintStream(buf)))
+
     val w = makeIndentedWriter(out)
+    if opts.autoIncludes && headers.nonEmpty then {
+      headers.toSeq.sortBy(_.ordinal).foreach { h => w.emitln(h.render) }
+      w.emitln("")
+    }
 
-    w.emitln("#include <stdbool.h>")
-    w.emitln("#include <stdio.h>")
-    w.emitln("#include <stdlib.h>")
-    w.emitln("")
+    out.print(buf.toString("utf-8"))
+  }
 
+  private def emitBody(prog: Program, w: IndentedWriter): Unit = {
     // Static data is named in the program the same way a function is, so it
     // belongs in the same env: `inferType` has no other way to reach its type.
     val topEnv: Env = prog.functions.map { (fname, fdef) =>
@@ -61,7 +91,10 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     def render: String = summon[Primitive[A]] match {
       case UNIT   => s"/* unit */"
       case INT    => s"$x"
-      case BOOL   => if x.asInstanceOf[Boolean] then "true" else "false"
+      case BOOL   => {
+        need(Header.StdBool)
+        if x.asInstanceOf[Boolean] then "true" else "false"
+      }
       case CHAR   => s"'${escapeChar(x.asInstanceOf[Char])}'"
       case STRING => s"\"${escapeString(x.asInstanceOf[String])}\""
     }
@@ -94,7 +127,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
   protected def renderType(ty: Type): String = ty match {
       case UNIT         => "void"
       case INT          => "int"
-      case BOOL         => "bool"
+      case BOOL         => { need(Header.StdBool); "bool" }
       case CHAR         => "char"
       case STRING       => "const char *"
       // A known length never reaches here. It is storage layout, so it only
@@ -163,6 +196,32 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
   // A short-circuiting operator, named by when it goes on to evaluate its right
   // operand: `&&` only when the left was true, `||` only when it was false.
   private enum ShortCircuit derives CanEqual { case AndAlso, OrElse }
+
+  // Which C headers the emitted body turned out to need. Recorded while
+  // emitting rather than worked out beforehand: the emitter deciding to write
+  // `malloc` is the only thing that makes `stdlib.h` necessary, so the two
+  // cannot drift.
+  //
+  // Declaration order is emission order, so the includes come out the same way
+  // whatever order the emitter discovered them in.
+  private enum Header derives CanEqual {
+    case StdBool, StdIO, StdLib, String, ElmsLib
+
+    def render: String = this match {
+      case StdBool => "#include <stdbool.h>"
+      case StdIO   => "#include <stdio.h>"
+      case StdLib  => "#include <stdlib.h>"
+      case String  => "#include <string.h>"
+      // Quoted and not angled: it is ours, and it is found next to the
+      // generated file rather than on the system include path.
+      case ElmsLib => "#include \"elms_lib.h\""
+    }
+  }
+
+  // Reset at the top of `emit`. A `CCodegen` is reusable, and a header the last
+  // program needed is not a header this one does.
+  private val headers = scala.collection.mutable.Set[Header]()
+  private def need(h: Header): Unit = { val _ = headers.add(h) }
 
   // What to hand back for `ty` when there is nothing real to hand back.
   private def zero(ty: Type): String = ty match {
@@ -514,6 +573,7 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
             .invalidTerm(s"C backend cannot allocate fixed-length arrays: $ty")
 
         case _ => {
+          need(Header.StdLib)
           out.emit(s"(${ARRAY(ty).render})malloc(sizeof(${ty.render}) * ")
           out.emitExpr(env)(t)
           out.emit(")")
@@ -852,6 +912,8 @@ class CCodegen(cfg: Config = Config.cDefault) extends Backend(cfg) {
     // `printf` needs the conversion that matches its argument, and `%s` was only
     // ever right for strings.
     private def emitPrintf(env: Env)(t: Term, terminator: String): Unit = {
+      need(Header.StdIO)
+
       def call(conv: String)(arg: => Unit): Unit = {
         out.emit(s"""printf("$conv$terminator", """)
         arg

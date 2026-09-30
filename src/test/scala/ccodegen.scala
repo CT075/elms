@@ -23,12 +23,21 @@ class CCodegenTests extends SnapshotFunSuite {
     override val codegen = CCodegen()
   }
 
+  // `CSnippetDriver` builds its own backend, which is what a snapshot wants.
+  // The include tests vary the backend, so they name it.
+  abstract class TunedDriver[A: Typable, B: Typable](override val codegen: CCodegen)
+    extends SimpleSnippetDriver[A, B] with DslOps
+
   test("pow5") {
     object Snippet extends CSnippetDriver[Int, Int] {
       def pow(x: Rep[Int], n: Int): Rep[Int] = if n == 0 then 1 else x * pow(x, n - 1)
       def snippet(x: Rep[Int]): Rep[Int] = pow(x, 5)
     }
-    check("pow5", Snippet.code)
+    val code = Snippet.code
+    check("pow5", code)
+    // Nothing here is a `bool`, prints or allocates, so there is no include
+    // block and no blank line where one would have been.
+    assert(code.startsWith("int snippet(int x0);"))
   }
 
   // The guard is what tells the two forms apart. It reflects two bindings of its
@@ -322,6 +331,40 @@ class CCodegenTests extends SnapshotFunSuite {
     // No snapshot: the output is deliberately not valid C, and pinning it would
     // be a trap for anyone who later compiles every check file.
     assert(snippet.code.contains("ERROR") && snippet.code.contains("ArrayInit"))
+  }
+
+  // The flag suppresses the include lines and changes nothing else. Asserting
+  // that by diff is what stops it from quietly disabling the feature the
+  // includes were there for.
+  test("autoIncludes off drops the includes and nothing else") {
+    def build(opts: CCodegen.Options): Vector[String] =
+      new TunedDriver[Boolean, Unit](CCodegen(opts = opts)) {
+        def snippet(x: Rep[Boolean]): Rep[Unit] = Builtins.println(x)
+      }.code.linesIterator.toVector
+
+    val full = build(CCodegen.Options())
+    val bare = build(CCodegen.Options(autoIncludes = false))
+
+    val (includes, rest) = full.span(_.startsWith("#include"))
+    assert(includes == Vector("#include <stdbool.h>", "#include <stdio.h>"))
+    assert(rest.head.isEmpty)
+    assert(rest.tail == bare)
+  }
+
+  // One instance, two programs. The leak this rules out is invisible in every
+  // snapshot, because each of those builds its own driver and its own backend.
+  test("headers do not leak between programs") {
+    val gen = CCodegen()
+
+    val loud = new TunedDriver[Int, Unit](gen) {
+      def snippet(x: Rep[Int]): Rep[Unit] = Builtins.println(x)
+    }
+    val quiet = new TunedDriver[Int, Int](gen) {
+      def snippet(x: Rep[Int]): Rep[Int] = x + 1
+    }
+
+    assert(loud.code.contains("#include <stdio.h>"))
+    assert(!quiet.code.contains("#include"))
   }
 
 }
