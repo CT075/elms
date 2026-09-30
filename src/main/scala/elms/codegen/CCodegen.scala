@@ -71,6 +71,32 @@ class CCodegen(
       fname -> functionType(fdef)
     }.toMap ++ lowered.staticData.map { (name, data) => name -> data.ty }
 
+    // Before anything renders a type, since `renderType` reads the answer. With
+    // `fatArrays` off this stays empty and every array below takes its
+    // bare-pointer branch.
+    fatElems =
+      if !opts.fatArrays then Set.empty
+      else lowered.functions.flatMap { (_, fdef) =>
+        fatElementTypes(topEnv + (fdef.arg -> fdef.inty))(fdef.body)
+      }.toSet.filter { elem => elemTag(elem).isDefined }
+
+    // Ahead of the struct declarations, because a struct can have a fat array
+    // as a member and would then name a type that did not exist yet. The other
+    // direction needs no ordering: a struct element renders as `struct Foo *`,
+    // and a pointer to an incomplete type is fine in a typedef.
+    //
+    // Among themselves they go in dependency order, since `elms_arr_arr_int`
+    // is declared in terms of `elms_arr_int`. That edge is nesting depth, so
+    // sorting on it is the whole topological sort.
+    val fatDecls = fatElems.toSeq
+      .flatMap { elem => fatName(elem).map { name => (depth(elem), name, elem) } }
+      .sortBy { (d, name, _) => (d, name) }
+
+    fatDecls.foreach { (_, name, elem) =>
+      w.emitln(s"ELMS_ARR_DECL($name, ${elem.render})")
+    }
+    if fatDecls.nonEmpty then w.emitln("")
+
     structsIn(lowered).foreach { repr => w.emitStructDecl(repr) }
 
     val customs = lowered.functions.flatMap { (_, fdef) =>
@@ -145,8 +171,15 @@ class CCodegen(
       case CHAR         => "char"
       case STRING       => "const char *"
       // A known length never reaches here. It is storage layout, so it only
-      // goes through `renderDeclarator`; elsewhere the array has decayed.
-      case ARRAY(t, _)  => s"${t.render} *"
+      // goes through `renderDeclarator`; elsewhere the array has decayed to a
+      // pointer, or to the struct that carries the length the pointer lost.
+      case ty @ ARRAY(t, _) => fatName(t) match {
+          case Some(name) if isFat(ty) => {
+            need(Header.ElmsLib)
+            name
+          }
+          case _ => s"${t.render} *"
+        }
       case STRUCT(repr) => s"struct ${repr.name} *"
 
       case RANGE => elmsRange("elms_range")
@@ -260,6 +293,72 @@ class CCodegen(
       s"/* ERROR: $msg */"
     }
 
+  // Element types whose dynamic arrays carry their length. Reset at the top of
+  // `emit`, for the same reason `headers` is.
+  //
+  // Promotion is per element type and program-wide: if anything measures an
+  // `ARRAY(INT, None)` then every one of them is a struct. A caller and a
+  // callee have to agree on a parameter's C type, and keying on the type is
+  // what makes them agree without a whole-program fixpoint over parameters,
+  // returns, members and elements. It is coarser than necessary, and an
+  // `Array[Int]` nobody measures pays a word and an indirection for it.
+  private var fatElems: Set[Type] = Set.empty
+
+  private def isFat(ty: Type): Boolean = ty match {
+    case ARRAY(elem, None) => fatElems.contains(elem)
+    case _                 => false
+  }
+
+  // A C identifier for an element type, so `ELMS_ARR_DECL` has a name to
+  // declare. `None` is a type whose arrays cannot be promoted: `UNIT` has no
+  // storage, `ARROW` has no C type at all, and a fixed-length element needs
+  // declarator syntax `renderType` cannot build.
+  private def elemTag(ty: Type): Option[String] = ty match {
+    case INT            => Some("int")
+    case BOOL           => Some("bool")
+    case CHAR           => Some("char")
+    case STRING         => Some("str")
+    case STRUCT(repr)   => Some(repr.name)
+    case ARRAY(t, None) => elemTag(t).map("arr_" + _)
+    case _              => None
+  }
+
+  private def fatName(elem: Type): Option[String] = elemTag(elem).map("elms_arr_" + _)
+
+  // How many arrays deep a type is, which is the only ordering the
+  // instantiations need: a fat array of a fat array comes after the one it is
+  // declared in terms of.
+  private def depth(ty: Type): Int = ty match {
+    case ARRAY(t, None) => 1 + depth(t)
+    case _              => 0
+  }
+
+  // Every element type whose dynamic arrays something takes the length of. A
+  // fixed-length array already knows its length statically, so it contributes
+  // nothing.
+  //
+  // `inferType` answers in `Type` and never asks how a type renders, so this
+  // can run before anything is emitted and `renderType` can read the result.
+  private def fatElementTypes(env: Env)(term: Term): Set[Type] = term match {
+    case V(_) => Set.empty
+
+    case Let(x, e1, e2, _) => fatElementTypes(env)(e1) ++
+        fatElementTypes(env.setOrRemove(x, inferType(env)(e1)))(e2)
+
+    case Function(arg, inty, _, body, _) => fatElementTypes(env + (arg -> inty))(body)
+
+    case E(op, children) => {
+      val nested = children.flatMap(fatElementTypes(env)).toSet
+      op match {
+        case Op.ArrayLength => children.headOption.flatMap(inferType(env)) match {
+            case Some(ARRAY(elem, None)) => nested + elem
+            case _                       => nested
+          }
+        case _ => nested
+      }
+    }
+  }
+
   // What to hand back for `ty` when there is nothing real to hand back.
   private def zero(ty: Type): String = ty match {
     case INT | CHAR => "0"
@@ -268,7 +367,17 @@ class CCodegen(
     // already been reported, but a second breakage on top of the first is what
     // makes the output hard to read.
     case RANGE => elmsRange("elms_range_mk(0, 0)")
-    case _     => "NULL"
+    // `NULL` is not a value of a struct type, so a fat array needs one of its
+    // own. Only reachable once an error has been reported, which is not a
+    // reason to emit a second one on top.
+    case ty @ ARRAY(t, _) if isFat(ty) => fatName(t) match {
+        case Some(name) => {
+          need(Header.ElmsLib)
+          s"${name}_zero()"
+        }
+        case None => "NULL"
+      }
+    case _ => "NULL"
   }
 
   // CR-soon cwong: We can probably perform `inferType` at the same time
@@ -473,6 +582,15 @@ class CCodegen(
       out.emitln("")
     }
 
+    // The thing `[i]` goes after. A bare pointer is subscripted directly and a
+    // fat array through the pointer it carries.
+    private def emitSubscriptable(env: Env)(t: Term): Unit = {
+      if inferType(env)(t).exists(isFat) then {
+        out.emitMaybeParenthesizedExpr(env)(t)
+        out.emit(".data")
+      } else out.emitExpr(env)(t)
+    }
+
     private def emitMaybeParenthesizedExpr(env: Env)(t: Term): Unit = {
       if t.isSimpleExpr then out.emitExpr(env)(t)
       else {
@@ -613,6 +731,16 @@ class CCodegen(
         case ARRAY(_, Some(_)) => out
             .invalidTerm(s"C backend cannot allocate fixed-length arrays: $ty")
 
+        // A fat array allocates through its own constructor, which is where
+        // the length it carries gets set. `elms_lib.h` pulls in `stdlib.h`
+        // itself, so only the bare-pointer branch asks for it here.
+        case _ if isFat(ARRAY(ty)) => {
+          need(Header.ElmsLib)
+          out.emit(s"${ARRAY(ty).render}_new(")
+          out.emitExpr(env)(t)
+          out.emit(")")
+        }
+
         case _ => {
           need(Header.StdLib)
           out.emit(s"(${ARRAY(ty).render})malloc(sizeof(${ty.render}) * ")
@@ -622,7 +750,7 @@ class CCodegen(
       }
 
       case View.ArrayGet(arr, i) => {
-        out.emitExpr(env)(arr)
+        out.emitSubscriptable(env)(arr)
         out.emit("[")
         out.emitExpr(env)(i)
         out.emit("]")
@@ -636,6 +764,22 @@ class CCodegen(
 
       case View.ArrayLength(arr) => inferType(env)(arr) match {
         case Some(ARRAY(_, Some(n))) => out.emit(n.toString)
+
+        case Some(ty) if isFat(ty) => {
+          out.emitMaybeParenthesizedExpr(env)(arr)
+          out.emit(".len")
+        }
+
+        case Some(ARRAY(_, None)) if !opts.fatArrays => out.invalidTerm(
+            "a dynamic array only knows its length when `fatArrays` is on, and" +
+              " it is off: enable it, or use a `FixedArray`"
+          )
+
+        case Some(ARRAY(elem, None)) => out.invalidTerm(
+            s"C backend has no name for an array of $elem, so it cannot carry" +
+              s" a length: $arr"
+          )
+
         case _ => out.invalidTerm(
             s"C backend cannot emit array length without explicit length metadata: $arr"
           )
@@ -739,7 +883,7 @@ class CCodegen(
       }
 
       case View.ArraySet(arr, i, x) => {
-        out.emitExpr(env)(arr)
+        out.emitSubscriptable(env)(arr)
         out.emit("[")
         out.emitExpr(env)(i)
         out.emit("] = ")
@@ -933,7 +1077,7 @@ class CCodegen(
       }
 
       case View.ArraySet(arr, i, x) => {
-        out.emitExpr(env)(arr)
+        out.emitSubscriptable(env)(arr)
         out.emit("[")
         out.emitExpr(env)(i)
         out.emit("] = ")

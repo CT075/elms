@@ -13,6 +13,13 @@ import elms.codegen.Config
 abstract class DslDriver[A: Typable, B: Typable]
     extends OptimizingSnippetDriver[A, B] with DslOps
 
+// A C driver whose backend the test names, for the cases that vary
+// `CCodegen.Options`. The snapshot drivers build their own and have no reason
+// to.
+abstract class TunedDriver[A: Typable, B: Typable](
+    override val codegen: elms.codegen.CCodegen
+) extends SimpleSnippetDriver[A, B] with DslOps
+
 trait EvalScalaSnippet[A: Typable, B: Typable] extends SnippetDriver[A, B] {
   val prefix: String
   val name: String

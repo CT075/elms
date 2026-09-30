@@ -23,11 +23,6 @@ class CCodegenTests extends SnapshotFunSuite {
     override val codegen = CCodegen()
   }
 
-  // `CSnippetDriver` builds its own backend, which is what a snapshot wants.
-  // The include tests vary the backend, so they name it.
-  abstract class TunedDriver[A: Typable, B: Typable](override val codegen: CCodegen)
-    extends SimpleSnippetDriver[A, B] with DslOps
-
   test("pow5") {
     object Snippet extends CSnippetDriver[Int, Int] {
       def pow(x: Rep[Int], n: Int): Rep[Int] = if n == 0 then 1 else x * pow(x, n - 1)
