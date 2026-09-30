@@ -32,11 +32,16 @@ abstract class SimpleEvalDriver[A: Typable, B: Typable]
 class NestedFunTests extends org.scalatest.funsuite.AnyFunSuite {
   val inputs = Seq(0, 1, 7, -3, 100)
 
-  // Five distinct answers, so a snippet that lost one of the two calls could
+  // Distinct answers throughout, so a snippet that lost one of its calls could
   // not pass by landing on the right number anyway.
-  def check(eval: Int => Int, expected: Int => Int, what: String): Unit = {
-    assert(inputs.map(expected).distinct.length == inputs.length)
-    inputs.foreach { n => assert(eval(n) == expected(n), s"$what disagreed on $n") }
+  def check(
+      eval: Int => Int,
+      expected: Int => Int,
+      what: String,
+      over: Seq[Int] = inputs
+  ): Unit = {
+    assert(over.map(expected).distinct.length == over.length)
+    over.foreach { n => assert(eval(n) == expected(n), s"$what disagreed on $n") }
   }
 
   def expected(n: Int): Int = n * 2 + (n + 1) * 3
@@ -65,6 +70,76 @@ class NestedFunTests extends org.scalatest.funsuite.AnyFunSuite {
       def snippet(x: Rep[Int]): Rep[Int] = fun(twice)(x) + fun(thrice)(x + unit(1))
     }
     check(Snippet.eval, expected, "eqsat")
+  }
+
+  // `makeFun` keys its memo on the serialized closure, and two eta-expansions
+  // of the same method are two lambda classes and two keys, so this reached
+  // codegen as two copies of the same helper under two names. Verified against
+  // lms-clean's own `ClosureCompare` under Scala 2.12, which behaves the same
+  // way, so `DedupFunctions` compares what came out instead.
+  def staged(code: String): Int = raw"def x\d+\(".r.findAllIn(code).length
+
+  test("the same helper staged twice is emitted once, simple builder") {
+    object Snippet extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "dupeSimple"
+
+      def twice(n: Rep[Int]): Rep[Int] = n * unit(2)
+
+      def snippet(x: Rep[Int]): Rep[Int] = fun(twice)(x) + fun(twice)(x + unit(1))
+    }
+    assert(staged(Snippet.code) == 1)
+    check(Snippet.eval, n => n * 2 + (n + 1) * 2, "dupe simple")
+  }
+
+  test("the same helper staged twice is emitted once, eqsat builder") {
+    object Snippet extends DslDriver[Int, Int] with EvalScalaSnippet[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "dupeEqsat"
+
+      def twice(n: Rep[Int]): Rep[Int] = n * unit(2)
+
+      def snippet(x: Rep[Int]): Rep[Int] = fun(twice)(x) + fun(twice)(x + unit(1))
+    }
+    assert(staged(Snippet.code) == 1)
+    check(Snippet.eval, n => n * 2 + (n + 1) * 2, "dupe eqsat")
+  }
+
+  // The other half of the same property: merging must not reach two helpers
+  // that only look alike.
+  test("two different helpers stay two") {
+    object Snippet extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "distinctSimple"
+
+      def twice(n: Rep[Int]): Rep[Int] = n * unit(2)
+      def thrice(n: Rep[Int]): Rep[Int] = n * unit(3)
+
+      def snippet(x: Rep[Int]): Rep[Int] = fun(twice)(x) + fun(thrice)(x + unit(1))
+    }
+    assert(staged(Snippet.code) == 2)
+    check(Snippet.eval, expected, "distinct")
+  }
+
+  // What the memo in `makeFun` is actually for. Each mention of `fact`
+  // re-evaluates the same `fun {...}`, so the re-entry finds the name already
+  // registered and calls it instead of staging the body again forever.
+  test("a recursive function calls itself") {
+    object Snippet extends SimpleEvalDriver[Int, Int] {
+      val prefix = "nested-fun"
+      val name = "factorial"
+
+      def fact: Rep[Int => Int] = fun { (n: Rep[Int]) =>
+        if n === unit(0) then unit(1) else n * fact(n - unit(1))
+      }
+
+      def snippet(x: Rep[Int]): Rep[Int] = fact(x)
+    }
+
+    assert(staged(Snippet.code) == 1)
+    // Its own inputs: `fact` counts down to zero, so a negative one never
+    // terminates, and the shared set holds a 100 that would overflow.
+    check(Snippet.eval, n => (1 to n).product, "factorial", Seq(0, 2, 5, 10))
   }
 
   // Three calls, so the block has to survive two more `fill`s after the first

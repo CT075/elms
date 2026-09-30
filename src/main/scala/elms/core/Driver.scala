@@ -79,5 +79,7 @@ abstract class Driver extends Base with ClosureCompare {
     f(name, v)
   }
 
-  def extract(): ast.Program = builder.extract()
+  // Every driver and both builders, because staging the same helper twice is a
+  // fact about how `makeFun` keys its memo rather than about any one of them.
+  def extract(): ast.Program = pipeline.DedupFunctions.run(builder.extract())
 }
