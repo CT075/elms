@@ -53,8 +53,10 @@ class Builder extends pipeline.Builder {
       outty: Type
   ): FunctionStub = {
     def fill(body: => Exp): Unit = {
-      if top then stBlock = Nil
-
+      // Nothing blanks `stBlock` here. `region` below opens on an empty block
+      // and puts the caller's back when it closes, so a function defined part
+      // way through another body leaves that body's statements where they were.
+      //
       // A clause raised inside a lambda belongs to the lambda, so the enclosing
       // function's contract goes aside for the duration.
       val outerContracts = contracts
