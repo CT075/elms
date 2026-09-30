@@ -45,14 +45,18 @@ static inline elms_range elms_range_mk(int start, int end) {
  * would otherwise index outside the string for a negative or oversized bound,
  * and agreeing with the Scala backend is what makes the two comparable.
  *
+ * Every clamp runs in `size_t` and nothing narrows a length to `int` on the way.
+ * `(int)strlen(s)` is implementation-defined past 2GB and wraps negative in
+ * practice, which turns `if (n > len) n = len` into a clamp that assigns a
+ * negative bound and hands back a pointer before `s`.
+ *
  * Nothing here owns `s`. `elms_str_take` and `elms_str_substring` allocate and
  * the caller frees, which nothing generated currently does. */
 
 static inline const char * elms_str_drop(const char * s, int n) {
-  int len = (int)strlen(s);
-  if (n < 0) n = 0;
-  if (n > len) n = len;
-  return s + n;
+  size_t len = strlen(s);
+  size_t k = n < 0 ? 0 : (size_t)n;
+  return s + (k > len ? len : k);
 }
 
 static inline bool elms_str_startswith(const char * s, const char * p) {
@@ -64,14 +68,20 @@ static inline bool elms_str_endswith(const char * s, const char * p) {
   return sl >= pl && memcmp(s + sl - pl, p, pl) == 0;
 }
 
+/* `a` is clamped from above as well as below, which Scala's `slice` does not
+ * appear to need: `"hello".slice(99, 3)` is the empty string either way. It is
+ * `s + a` that needs it, since forming a pointer that far past the end is
+ * undefined even when the copy that follows is zero bytes long. */
 static inline char * elms_str_substring(const char * s, int a, int b) {
-  int len = (int)strlen(s);
-  if (a < 0) a = 0;
-  if (b > len) b = len;
-  if (b < a) b = a;
-  char * r = (char *)malloc((size_t)(b - a) + 1);
-  memcpy(r, s + a, (size_t)(b - a));
-  r[b - a] = '\0';
+  size_t len = strlen(s);
+  size_t lo = a < 0 ? 0 : (size_t)a;
+  size_t hi = b < 0 ? 0 : (size_t)b;
+  if (lo > len) lo = len;
+  if (hi > len) hi = len;
+  if (hi < lo) hi = lo;
+  char * r = (char *)malloc(hi - lo + 1);
+  memcpy(r, s + lo, hi - lo);
+  r[hi - lo] = '\0';
   return r;
 }
 
